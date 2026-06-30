@@ -1,0 +1,14 @@
+# Secrets — never commit these
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Local user data
+bets.json
+
+# OS
+.DS_Store
