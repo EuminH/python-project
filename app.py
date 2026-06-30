@@ -297,7 +297,7 @@ if page == "🏠 Daily Intelligence":
             '<th style="text-align:right;padding:6px 8px;font-weight:500">ODDS</th>'
             '<th style="text-align:right;padding:6px 8px;font-weight:500">FAIR%</th>'
             '<th style="text-align:right;padding:6px 8px;font-weight:500">EV/$100</th>'
-            '<th style="text-align:right;padding:6px 8px;font-weight:500">STAKE</th>'
+            '<th style="text-align:right;padding:6px 8px;font-weight:500">½-KELLY STAKE</th>'
             '<th style="text-align:right;padding:6px 0;font-weight:500">KICKOFF</th></tr>'
         )
         body = ""
@@ -749,7 +749,7 @@ elif page == "🎰 Parlay Builder":
 
 # ── Bet Tracker ────────────────────────────────────────────────────────────
 elif page == "🧩 Build My Parlay":
-    from value_betting import fetch_events, value_bets, SPORT_TAGS, SPORTS, _american_from_decimal
+    from value_betting import fetch_events, value_bets, kelly_stake, SPORT_TAGS, SPORTS, _american_from_decimal
     from collections import Counter
 
     bp_today = datetime.date.today()
@@ -802,7 +802,11 @@ elif page == "🧩 Build My Parlay":
         picks = st.multiselect("Add legs (type a team or player to search)", list(labelmap.keys()))
         legs = [labelmap[p] for p in picks]
 
-        stake = st.number_input("Parlay stake ($)", 1.0, 100000.0, 20.0, 5.0)
+        cstake, cbank = st.columns(2)
+        stake = cstake.number_input("Parlay stake ($)", 1.0, 100000.0, 20.0, 5.0,
+                                    help="What you plan to bet — drives the payout below.")
+        bankroll = cbank.number_input("Bankroll ($)", 50.0, 1_000_000.0, 1000.0, 50.0,
+                                      help="Used to compute the suggested ½-Kelly stake for this parlay.")
 
         if not legs:
             st.markdown('<div style="color:#64748b;font-size:13px;padding:16px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">Select one or more legs above to see the combined EV and the verdict.</div>', unsafe_allow_html=True)
@@ -816,6 +820,7 @@ elif page == "🧩 Build My Parlay":
             profit = payout - stake
             ev_dollars = stake * ev
             am_combined = _american_from_decimal(cd)
+            kelly = kelly_stake(cp, cd, bankroll)   # suggested ½-Kelly stake (0 if no edge)
 
             game_counts = Counter((l["sport"], l["match"], l["date"], l["time"]) for l in legs)
             conflicts = [g for g, c in game_counts.items() if c > 1]
@@ -855,12 +860,14 @@ elif page == "🧩 Build My Parlay":
 
             # ── Combined metrics ────────────────────────────────────────────
             ev_color = "#22c55e" if ev > 0 else "#ef4444"
+            kelly_color = "#22c55e" if kelly > 0 else "#ef4444"
             st.markdown(
-                '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:12px">'
+                '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:12px">'
                 f'<div class="stat-cell"><div class="stat-cell-label">Legs</div><div class="stat-cell-val">{len(legs)}</div></div>'
                 f'<div class="stat-cell"><div class="stat-cell-label">Hit probability</div><div class="stat-cell-val">{cp*100:.2f}%</div></div>'
                 f'<div class="stat-cell"><div class="stat-cell-label">Combined odds</div><div class="stat-cell-val orange">{am_combined} ({cd:.2f}x)</div></div>'
                 f'<div class="stat-cell"><div class="stat-cell-label">EV / $100</div><div class="stat-cell-val" style="color:{ev_color}">{"+" if ev>=0 else ""}${ev*100:.2f}</div></div>'
+                f'<div class="stat-cell"><div class="stat-cell-label">½-Kelly stake</div><div class="stat-cell-val" style="color:{kelly_color}">${kelly:,.2f}</div></div>'
                 f'<div class="stat-cell"><div class="stat-cell-label">${stake:.0f} returns</div><div class="stat-cell-val">${payout:,.2f}</div></div>'
                 '</div>',
                 unsafe_allow_html=True)
@@ -871,10 +878,10 @@ elif page == "🧩 Build My Parlay":
                 vmsg = f"You picked {sum(c for _,c in game_counts.items() if c>1)} legs from the same game — they can't all win, so this isn't a real parlay. Remove the duplicate side."
             elif ev > 0.03:
                 vc, icon, vtitle = "#22c55e", "✅", "WORTH IT — STRONG +EV"
-                vmsg = f"+{ev*100:.1f}% expected value. On ${stake:.0f} you'd average +${ev_dollars:.2f} per bet long-run. Hits {cp*100:.1f}% of the time for ${payout:,.2f}."
+                vmsg = f"+{ev*100:.1f}% expected value. Suggested ½-Kelly stake: <b>${kelly:,.2f}</b> on your ${bankroll:,.0f} bankroll. Hits {cp*100:.1f}% of the time for {cd:.2f}x."
             elif ev > 0:
                 vc, icon, vtitle = "#22c55e", "✅", "WORTH IT — SLIGHT +EV"
-                vmsg = f"+{ev*100:.1f}% expected value — thin but positive (≈ +${ev_dollars:.2f} on ${stake:.0f}). Every leg pulling its weight helps."
+                vmsg = f"+{ev*100:.1f}% expected value — thin but positive. Suggested ½-Kelly stake: <b>${kelly:,.2f}</b> (small, because the edge is thin). Every leg pulling its weight helps."
             elif ev > -0.03:
                 vc, icon, vtitle = "#f59e0b", "⚠️", "MARGINAL — ~BREAK-EVEN"
                 vmsg = f"{ev*100:.1f}% EV — the bookmaker's vig almost exactly cancels your edge. Swap a leg for a +EV one to push this positive."
