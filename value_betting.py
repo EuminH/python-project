@@ -453,6 +453,33 @@ def build_parlay(value_bets, max_legs=3, min_prob=0.0, min_ev=0.0,
     return _assemble(legs, label, note)
 
 
+def build_target_payout_parlay(flat, lo=1.5, hi=2.0, min_prob=0.0, min_ev=-0.03,
+                               label="1.5–2x Payout"):
+    """Stack the most likely legs (one per match) until the combined payout
+    lands inside [lo, hi]. Skips any leg that would overshoot. A single leg
+    is allowed if it alone lands in the window."""
+    pool = [b for b in flat if b["ev"] >= min_ev and b["fair_prob"] >= min_prob]
+    # Best EV first: fewest legs = least compounded vig. A single pick that
+    # pays 1.5-2x on its own beats a long chain of heavy favorites.
+    pool.sort(key=lambda x: (-x["ev"], -x["fair_prob"]))
+    seen, legs, cd = set(), [], 1.0
+    for b in pool:
+        if b["match"] in seen:
+            continue
+        nd = cd * b["decimal"]
+        if nd > hi:
+            continue                       # this leg would overshoot the window
+        seen.add(b["match"])
+        legs.append(b)
+        cd = nd
+        if cd >= lo:
+            break
+    if not legs or not (lo <= cd <= hi):
+        return None
+    return _assemble(legs, label,
+                     note=f"Best-EV path to a {lo:g}–{hi:g}x payout — fewest legs, least vig")
+
+
 def build_parlay_suite(all_bets, min_leg_prob=0.0):
     """Curated parlays spanning the risk spectrum. `min_leg_prob` (0-1) is the
     floor each leg's fair probability must clear."""
@@ -463,6 +490,7 @@ def build_parlay_suite(all_bets, min_leg_prob=0.0):
                           min_prob=max(0.55, min_leg_prob), min_ev=-0.03,
                           label="Most Likely to Hit",
                           note="Highest-probability favorites · best available price")
+    modest = build_target_payout_parlay(flat, lo=1.5, hi=2.0, min_prob=min_leg_prob)
     balanced = build_parlay(pos, max_legs=3, rank="prob", min_prob=min_leg_prob,
                            label="Balanced +EV",
                            note="Three +EV picks with the best shot to hit")
@@ -470,7 +498,7 @@ def build_parlay_suite(all_bets, min_leg_prob=0.0):
                         label="Max Value +EV",
                         note="Four highest-EV picks — long shot, huge payout")
     sigs = set()
-    for p in (likely, balanced, value):
+    for p in (likely, modest, balanced, value):
         if not p:
             continue
         sig = tuple(sorted((l["pick"], l["match"]) for l in p["legs"]))
