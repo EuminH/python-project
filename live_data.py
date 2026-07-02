@@ -79,6 +79,17 @@ def get_live_odds(sport="nba", markets="h2h", limit=20, books=None):
     return data[:limit]
 
 
+def get_event_odds(sport, event_id, markets, books=None):
+    """Odds for ONE event's additional/prop markets (per-event endpoint).
+    Costs ~1 API credit per market requested — fetch on demand, not in bulk."""
+    key = SPORT_KEYS.get(sport, sport)
+    book_str = ",".join(books) if books else ",".join(BOOKS)
+    url = (f"{ODDS_BASE}/sports/{key}/events/{event_id}/odds"
+           f"?apiKey={ODDS_API_KEY}&regions=us&markets={markets}"
+           f"&oddsFormat=american&bookmakers={book_str}")
+    return _get(url)
+
+
 def print_live_odds(sport="nba"):
     events = get_live_odds(sport)
     if not events:

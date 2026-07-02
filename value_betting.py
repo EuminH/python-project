@@ -209,6 +209,142 @@ def find_value_bets(sport_label, sport_key, days=2, min_ev=-1.0, limit=50, bet_b
     return value_bets({sport_label: events}, min_ev=min_ev, bet_books=bet_books)[sport_label]
 
 
+# ── Side bets (event-specific prop markets) ────────────────────────────────
+# These only exist on The Odds API's per-event endpoint (1 credit per market
+# per fetch), so the app loads them on demand for one selected game.
+
+_TENNIS_SIDE = {
+    "alternate_spreads": "Game handicap",
+    "alternate_totals":  "Total games",
+}
+
+SIDE_MARKETS = {
+    "World Cup": {
+        "alternate_totals":           "Goals O/U",
+        "team_totals":                "Team goals O/U",
+        "totals_h1":                  "1st-half goals",
+        "btts":                       "Both teams to score",
+        "draw_no_bet":                "Draw no bet",
+        "h2h_h1":                     "1st-half result",
+        "alternate_spreads":          "Goal handicap",
+        "alternate_totals_corners":   "Corners O/U",
+        "player_goal_scorer_anytime": "Anytime goalscorer",
+        "player_first_goal_scorer":   "First goalscorer",
+        "player_shots_on_target":     "Shots on target",
+        "player_assists":             "Assists O/U",
+    },
+    "ATP Wimbledon": _TENNIS_SIDE,
+    "WTA Wimbledon": _TENNIS_SIDE,
+}
+
+
+def _side_pick(name, desc, point, mkey):
+    """Human pick label: 'Lamine Yamal Over 0.5', 'Over 14.5', 'Oyarzabal' (scorer)."""
+    if name == "Yes" and desc and point is None:
+        return desc                        # scorer-style: the player IS the pick
+    parts = []
+    if desc:
+        parts.append(desc)
+    parts.append(name)
+    if point is not None:
+        parts.append(f"{point:+g}" if "spread" in mkey else f"{point:g}")
+    return " ".join(parts)
+
+
+def side_bets_for_event(event, sport_label, bet_books=None):
+    """Rows for one event's side markets.
+
+    Two honest modes per outcome group:
+    - mode='fair': the group is a mutually-exclusive set (Over/Under pair,
+      Yes/No, match result) -> power de-vig + median across books -> real
+      fair prob and EV, same math as the main board.
+    - mode='shop': not de-viggable (e.g. anytime scorer: many players can
+      score). No fair prob exists; we report the best price vs the median
+      book price (pure line-shopping edge, NOT an EV claim).
+    """
+    if not event:
+        return []
+    bb = bet_books or VALUE_BOOKS
+    ct = event.get("commence_time", "")
+    home, away = event.get("home_team", ""), event.get("away_team", "")
+    match = f"{away} vs {home}" if home and away else (away or home)
+    label_map = SIDE_MARKETS.get(sport_label, {})
+
+    # groups[(mkey, gid)] = {book_key: {(name, desc, point): (dec, am, title)}}
+    groups = {}
+    for bm in event.get("bookmakers", []):
+        for m in bm.get("markets", []):
+            mkey = m["key"]
+            if mkey not in label_map:
+                continue
+            for o in m.get("outcomes", []):
+                price = o.get("price")
+                if not isinstance(price, (int, float)):
+                    continue
+                name, desc, point = o["name"], o.get("description"), o.get("point")
+                gid = (desc, abs(point) if point is not None else None)
+                okey = (name, desc, point)
+                groups.setdefault((mkey, gid), {}).setdefault(bm["key"], {})[okey] = (
+                    american_to_decimal(int(price)), int(price), bm["title"])
+
+    rows = []
+    for (mkey, gid), books_d in groups.items():
+        # exclusive set -> de-vig; else line-shop mode
+        sig = None
+        per_book_fair = []
+        for d in books_d.values():
+            keys = set(d.keys())
+            if sig is None:
+                sig = keys
+            if keys != sig or len(keys) < 2:
+                continue
+            imps = {k: 1.0 / d[k][0] for k in keys}
+            if not 0.9 <= sum(imps.values()) <= 1.35:
+                continue
+            per_book_fair.append(_devig_power(imps))
+        devig_ok = bool(per_book_fair) and sig is not None and len(sig) >= 2
+
+        all_keys = set()
+        for d in books_d.values():
+            all_keys.update(d.keys())
+
+        for okey in all_keys:
+            name, desc, point = okey
+            cands = [books_d[bk][okey] for bk in bb
+                     if bk in books_d and okey in books_d[bk]]
+            if not cands:
+                continue                   # user's book(s) don't price it
+            dec, american, book = max(cands, key=lambda t: t[0])
+            all_prices = {d[okey][2]: d[okey][1] for d in books_d.values() if okey in d}
+            all_decs = [d[okey][0] for d in books_d.values() if okey in d]
+            row = {
+                "sport": sport_label, "match": match,
+                "date": ct[:10], "time": ct[11:16] + " UTC" if len(ct) >= 16 else "",
+                "market": label_map[mkey], "market_key": mkey,
+                "pick": _side_pick(name, desc, point, mkey),
+                "decimal": round(dec, 3), "american": american, "book": book,
+                "n_books": len(all_prices), "all_prices": all_prices,
+                "commence": ct,
+            }
+            if devig_ok and okey in sig:
+                p = statistics.median(f[okey] for f in per_book_fair)
+                ev = p * dec - 1
+                row.update({"mode": "fair", "fair_prob": round(p, 4),
+                            "ev": round(ev, 4), "ev_per_100": round(ev * 100, 2)})
+            else:
+                med = statistics.median(all_decs)
+                row.update({"mode": "shop", "fair_prob": None, "ev": None,
+                            "shop_edge": round((dec / med - 1) * 100, 2)})
+            rows.append(row)
+
+    # fair rows first (sorted by EV), then shop rows (sorted by shop edge)
+    fair = sorted([r for r in rows if r["mode"] == "fair"],
+                  key=lambda x: x["ev"], reverse=True)
+    shop = sorted([r for r in rows if r["mode"] == "shop"],
+                  key=lambda x: x["shop_edge"], reverse=True)
+    return fair + shop
+
+
 # ── Closing-line snapshots (for CLV grading) ───────────────────────────────
 
 def snapshot_closing(events_by_sport):

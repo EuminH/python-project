@@ -176,6 +176,7 @@ with st.sidebar:
     st.divider()
     page = st.radio("Navigation", [
         "🏠 Daily Intelligence",
+        "🎯 Side Bets",
         "📖 How It Works",
         "🤖 ML Model",
         "📡 Live Odds",
@@ -493,6 +494,193 @@ if page == "🏠 Daily Intelligence":
             extra = f" (showing first {len(shown)})" if len(bets) > len(shown) else ""
             st.caption(f"{len(bets)} priced outcomes{extra} · {n_bet} rated BET (+EV) · #BKS = books in the consensus for that line.")
 
+
+
+
+elif page == "🎯 Side Bets":
+    from value_betting import (fetch_events, side_bets_for_event, kelly_stake,
+                               SIDE_MARKETS, SPORTS, SPORT_TAGS, CONSENSUS_BOOKS)
+    from live_data import get_event_odds
+
+    sb_today = datetime.date.today()
+    sb_book_choice = st.sidebar.radio("Sportsbook to bet at",
+                                      ["Best of both", "FanDuel only", "DraftKings only"],
+                                      key="sb_book")
+    SB_BOOKS = {"Best of both": None, "FanDuel only": ["fanduel"], "DraftKings only": ["draftkings"]}[sb_book_choice]
+    sb_bankroll = st.sidebar.number_input("Bankroll ($)", 50.0, 1_000_000.0, 1000.0, 50.0, key="sb_bank")
+
+    _q = get_quota()
+    if _q:
+        st.sidebar.caption(f"🔋 API credits left: {_q['remaining']:.0f} · each fetch below costs ≈1 credit per market")
+
+    st.markdown(f"""
+    <div class="topbar">
+        <div class="topbar-left">
+            <div style="width:10px;height:10px;border-radius:50%;background:#f97316"></div>
+            <span class="sport-badge">SIDE BETS</span>
+            <span class="topbar-sub">· GOALS · SCORERS · CORNERS · PROPS · PER-GAME</span>
+        </div>
+        <div class="topbar-date">{sb_today.strftime('%a %b %-d')}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div style="color:#e2e8f0;font-size:24px;font-weight:700;margin-bottom:2px">Side bets &amp; props</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#94a3b8;font-size:14px;margin-bottom:14px">Pick a game, choose the prop markets you care about, and fetch. Where the market can be de-vigged (goals O/U, corners, BTTS, handicaps) you get a real <b>Fair % and EV</b>. Where it can\'t (goalscorers — many players can score), you get the <b>best price vs the median book</b> instead: pure line-shopping, not an EV claim.</div>', unsafe_allow_html=True)
+
+    @st.cache_data(ttl=300, show_spinner="Loading games…")
+    def _sb_events(_d):
+        return fetch_events(days=2)
+
+    raw = _sb_events(f"{sb_today}-v2")
+    sb_sport = st.selectbox("Sport", list(SIDE_MARKETS.keys()),
+                            format_func=lambda s: f"{SPORT_TAGS.get(s,'')} {s}")
+    events = raw.get(sb_sport, [])
+
+    if sb_sport in ("ATP Wimbledon", "WTA Wimbledon"):
+        st.markdown('<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:10px 14px;margin-bottom:10px;color:#fbbf24;font-size:12px">ℹ️ Heads-up: The Odds API has <b>no set-winner market</b> for tennis — only alternate game handicaps and total games, and FanDuel/DraftKings price those sparsely. Soccer prop coverage is much deeper.</div>', unsafe_allow_html=True)
+
+    if not events:
+        st.info(f"No {sb_sport} games today or tomorrow.")
+    else:
+        ev_opts = {f"{e['away_team']} @ {e['home_team']}  ·  {e.get('commence_time','')[:10]} {e.get('commence_time','')[11:16]} UTC": e
+                   for e in sorted(events, key=lambda x: x.get("commence_time", ""))}
+        sel_game = st.selectbox("Game", list(ev_opts.keys()))
+        e0 = ev_opts[sel_game]
+
+        labels = SIDE_MARKETS[sb_sport]
+        label_list = list(labels.values())
+        chosen_labels = st.multiselect("Prop markets", label_list, default=label_list[:6])
+        chosen_keys = [k for k, v in labels.items() if v in chosen_labels]
+
+        fetch_col, _sp = st.columns([1, 2])
+        if fetch_col.button(f"⚡ Fetch side bets (≈{max(1,len(chosen_keys))} API credits)", use_container_width=True):
+            st.session_state["sb_sel"] = (SPORTS[sb_sport], e0["id"], tuple(sorted(chosen_keys)), sb_sport)
+
+        sel = st.session_state.get("sb_sel")
+        if sel and sel[1] == e0["id"] and set(sel[2]) == set(chosen_keys):
+            skey, eid, mkeys, slabel = sel
+
+            @st.cache_data(ttl=300, show_spinner="Fetching prop odds…")
+            def _sb_fetch(_skey, _eid, _mkeys):
+                return get_event_odds(_skey, _eid, ",".join(_mkeys), books=CONSENSUS_BOOKS)
+
+            ev_data = _sb_fetch(skey, eid, mkeys)
+            rows = side_bets_for_event(ev_data, slabel, SB_BOOKS)
+
+            if not rows:
+                st.markdown('<div style="color:#94a3b8;font-size:13px;padding:16px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">FanDuel/DraftKings aren\'t pricing these prop markets for this game (common far from kickoff, and normal for tennis). Try closer to game time or another game.</div>', unsafe_allow_html=True)
+            else:
+                fair_rows = [r for r in rows if r["mode"] == "fair"]
+                shop_rows = [r for r in rows if r["mode"] == "shop"]
+                pos = [r for r in fair_rows if r["ev"] > 0]
+
+                st.markdown(
+                    '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0 16px">'
+                    f'<div class="stat-cell"><div class="stat-cell-label">Prop outcomes</div><div class="stat-cell-val">{len(rows)}</div></div>'
+                    f'<div class="stat-cell"><div class="stat-cell-label">De-viggable (real EV)</div><div class="stat-cell-val">{len(fair_rows)}</div></div>'
+                    f'<div class="stat-cell"><div class="stat-cell-label">+EV props</div><div class="stat-cell-val" style="color:{"#22c55e" if pos else "#94a3b8"}">{len(pos)}</div></div>'
+                    f'<div class="stat-cell"><div class="stat-cell-label">Price-shop rows</div><div class="stat-cell-val">{len(shop_rows)}</div></div>'
+                    '</div>', unsafe_allow_html=True)
+
+                tab_fair, tab_shop = st.tabs(["✅ De-vigged — real EV", "🛒 Scorers & props — best price"])
+
+                with tab_fair:
+                    if not fair_rows:
+                        st.info("No de-viggable markets returned for this game.")
+                    else:
+                        head = ('<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                                '<th style="text-align:left;padding:6px 8px 6px 0;font-weight:500">MARKET</th>'
+                                '<th style="text-align:left;padding:6px 8px;font-weight:500">PICK</th>'
+                                '<th style="text-align:center;padding:6px 8px;font-weight:500">BOOK</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">ODDS</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">FAIR%</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">#BKS</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">EV/$100</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">½-KELLY</th>'
+                                '<th style="text-align:center;padding:6px 0;font-weight:500">VERDICT</th></tr>')
+                        body = ""
+                        for r in fair_rows[:60]:
+                            am = f"+{r['american']}" if r['american'] > 0 else str(r['american'])
+                            posr = r["ev"] > 0
+                            evc = "#22c55e" if posr else "#64748b"
+                            verdict = ('<span style="background:#22c55e22;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">BET</span>'
+                                       if posr else '<span style="color:#475569;font-size:11px">pass</span>')
+                            bc = "#1493ff" if "Draft" in r["book"] else "#1a9c4c"
+                            kst = kelly_stake(r["fair_prob"], r["decimal"], sb_bankroll)
+                            body += ('<tr style="border-bottom:1px solid #111127">'
+                                     f'<td style="padding:7px 8px 7px 0"><span style="background:#7c3aed22;color:#a78bfa;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">{r["market"]}</span></td>'
+                                     f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{r["pick"][:26]}</td>'
+                                     f'<td style="text-align:center;padding:7px 8px"><span style="color:{bc};font-size:11px;font-weight:600">{r["book"]}</span></td>'
+                                     f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{am}</td>'
+                                     f'<td style="color:#94a3b8;text-align:right;padding:7px 8px">{r["fair_prob"]*100:.1f}%</td>'
+                                     f'<td style="color:#64748b;text-align:right;padding:7px 8px">{r["n_books"]}</td>'
+                                     f'<td style="color:{evc};text-align:right;padding:7px 8px;font-weight:700">{"+" if posr else ""}${r["ev_per_100"]:.2f}</td>'
+                                     f'<td style="color:#e2e8f0;text-align:right;padding:7px 8px">${kst:.2f}</td>'
+                                     f'<td style="text-align:center;padding:7px 0">{verdict}</td></tr>')
+                        st.markdown('<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
+                                    '<table style="width:100%;border-collapse:collapse;font-size:12px">' + head + body + '</table></div>',
+                                    unsafe_allow_html=True)
+                        st.caption(f"Sorted by EV. #BKS = books in the consensus (1 = single book de-vig — trust it less). Showing {min(len(fair_rows),60)} of {len(fair_rows)}.")
+
+                with tab_shop:
+                    if not shop_rows:
+                        st.info("No scorer/prop rows returned for this game.")
+                    else:
+                        head = ('<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                                '<th style="text-align:left;padding:6px 8px 6px 0;font-weight:500">MARKET</th>'
+                                '<th style="text-align:left;padding:6px 8px;font-weight:500">PICK</th>'
+                                '<th style="text-align:center;padding:6px 8px;font-weight:500">BEST BOOK</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">ODDS</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">#BKS</th>'
+                                '<th style="text-align:right;padding:6px 8px;font-weight:500">VS MEDIAN</th>'
+                                '<th style="text-align:center;padding:6px 0;font-weight:500">CALL</th></tr>')
+                        body = ""
+                        for r in shop_rows[:60]:
+                            am = f"+{r['american']}" if r['american'] > 0 else str(r['american'])
+                            good = r["shop_edge"] >= 5 and r["n_books"] >= 2
+                            ec = "#22c55e" if good else "#64748b"
+                            call = ('<span style="background:#22c55e22;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">BEST PRICE</span>'
+                                    if good else '<span style="color:#475569;font-size:11px">—</span>')
+                            bc = "#1493ff" if "Draft" in r["book"] else "#1a9c4c"
+                            body += ('<tr style="border-bottom:1px solid #111127">'
+                                     f'<td style="padding:7px 8px 7px 0"><span style="background:#f9731622;color:#fb923c;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">{r["market"]}</span></td>'
+                                     f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{r["pick"][:26]}</td>'
+                                     f'<td style="text-align:center;padding:7px 8px"><span style="color:{bc};font-size:11px;font-weight:600">{r["book"]}</span></td>'
+                                     f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{am}</td>'
+                                     f'<td style="color:#64748b;text-align:right;padding:7px 8px">{r["n_books"]}</td>'
+                                     f'<td style="color:{ec};text-align:right;padding:7px 8px;font-weight:700">+{r["shop_edge"]:.1f}%</td>'
+                                     f'<td style="text-align:center;padding:7px 0">{call}</td></tr>')
+                        st.markdown('<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
+                                    '<table style="width:100%;border-collapse:collapse;font-size:12px">' + head + body + '</table></div>',
+                                    unsafe_allow_html=True)
+                        st.caption(f"VS MEDIAN = how much better this price is than the median book for the same pick — line shopping, not a fair-value EV. Scorer markets can't be de-vigged (many players can score). Showing {min(len(shop_rows),60)} of {len(shop_rows)}.")
+
+                # ── Log a side bet ──────────────────────────────────────────
+                with st.expander("➕ Log one of these side bets"):
+                    def _sb_label(r, i):
+                        am = f"+{r['american']}" if r['american'] > 0 else str(r['american'])
+                        tag = f"EV {r['ev_per_100']:+.1f}" if r["mode"] == "fair" else f"+{r['shop_edge']:.1f}% vs median"
+                        return f"{i+1}. {r['pick']} · {r['market']} · {am} @ {r['book']} · {tag}"
+                    logopts = {_sb_label(r, i): r for i, r in enumerate(rows[:120])}
+                    pick_log = st.selectbox("Side bet", list(logopts.keys()))
+                    rsel = logopts[pick_log]
+                    sug = kelly_stake(rsel["fair_prob"], rsel["decimal"], sb_bankroll) if rsel["mode"] == "fair" else 0.0
+                    lc1, lc2 = st.columns(2)
+                    sb_stake = lc1.number_input("Stake ($)", 1.0, 100000.0, float(max(1.0, round(sug, 2))), 1.0, key="sb_stake")
+                    if lc2.button("Log to Bet Tracker", use_container_width=True, key="sb_log"):
+                        bets_file = load_bets()
+                        bets_file.append({
+                            "id": int(datetime.datetime.now().timestamp()),
+                            "date": datetime.date.today().isoformat(),
+                            "sport": rsel["sport"], "event": rsel["match"],
+                            "pick": f"{rsel['pick']} ({rsel['market']})",
+                            "odds": int(rsel["american"]), "stake": float(sb_stake),
+                            "book": rsel["book"], "result": "pending", "payout": 0.0,
+                            "market": rsel["market"], "logged_dec": rsel["decimal"],
+                            "fair_prob": rsel.get("fair_prob"), "commence": rsel.get("commence", ""),
+                        })
+                        save_bets(bets_file)
+                        st.success(f"Logged: {rsel['pick']} ({rsel['american']:+d} @ {rsel['book']}) — ${sb_stake:.2f}")
 
 
 
