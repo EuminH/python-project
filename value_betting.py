@@ -126,17 +126,19 @@ def _pick_name(mkey, name, point):
     return f"{name} {point:g}"            # totals: "Over 8.5"
 
 
-def _bets_for_event(e, label, bet_books):
+def _bets_for_event(e, label, bet_books, min_books=2):
     """Bet rows for one event across all markets. Fair prob = consensus of all
-    books; the price/EV use only `bet_books` (where the user will bet)."""
+    books; the price/EV use only `bet_books` (where the user will bet).
+    min_books=1 accepts single-book de-vigs (needed for tennis/soccer
+    spreads+totals where books hang different lines); n_books flags them."""
     lines = _book_lines(e)
     ct = e.get("commence_time", "")
     home, away = e.get("home_team", ""), e.get("away_team", "")
     match = f"{away} vs {home}" if home and away else (away or home)
     rows = []
     for (mkey, group), books_d in lines.items():
-        if len(books_d) < 2:
-            continue                       # need >=2 books for a consensus
+        if len(books_d) < min_books:
+            continue
         fair = _fair_probs(books_d)
         if not fair:
             continue
@@ -184,13 +186,14 @@ def fetch_events(days=2, limit=50, markets=MARKETS):
             for label, key in SPORTS.items()}
 
 
-def value_bets(events_by_sport, min_ev=-1.0, bet_books=None):
+def value_bets(events_by_sport, min_ev=-1.0, bet_books=None, min_books=2):
     """Compute bets from pre-fetched events. `bet_books` (e.g. ['fanduel'])
-    restricts which book's price is used; None = best of FanDuel + DraftKings."""
+    restricts which book's price is used; None = best of FanDuel + DraftKings.
+    min_books=1 additionally admits single-book de-vigged lines."""
     bb = bet_books or VALUE_BOOKS
     out = {}
     for label, events in events_by_sport.items():
-        rows = [r for e in events for r in _bets_for_event(e, label, bb)
+        rows = [r for e in events for r in _bets_for_event(e, label, bb, min_books=min_books)
                 if r["ev"] >= min_ev]
         out[label] = sorted(rows, key=lambda x: x["ev"], reverse=True)
     return out
@@ -480,10 +483,14 @@ def build_target_payout_parlay(flat, lo=1.5, hi=2.0, min_prob=0.0, min_ev=-0.03,
                      note=f"Best-EV path to a {lo:g}–{hi:g}x payout — fewest legs, least vig")
 
 
-def build_mixed_parlay(flat, min_prob=0.35, min_ev=-0.03, label="Mixed Legs"):
-    """One leg from each DIFFERENT market type (ML, Spread, Total), preferring
-    different sports too. +EV legs first, then highest probability. Two passes:
-    strict (new market AND new sport) then relaxed (new market only)."""
+def build_mixed_parlay(flat, min_prob=0.35, min_ev=-0.06, label="Mixed Legs",
+                       max_legs=3):
+    """Market-diverse parlay: first fill one leg per DIFFERENT market type
+    (ML, Spread, Total), preferring different sports; beyond that, top up by
+    always adding to the LEAST-represented market so the mix stays balanced.
+    +EV legs first, then highest probability. min_ev is looser than other
+    builders because spreads/totals carry slightly more vig — the card's EV
+    readout stays honest either way."""
     pool = [b for b in flat if b["ev"] >= min_ev and b["fair_prob"] >= min_prob]
     pool.sort(key=lambda x: (-(x["ev"] > 0), -x["fair_prob"]))
     seen_match, seen_market, seen_sport, legs = set(), set(), set(), []
@@ -498,9 +505,24 @@ def build_mixed_parlay(flat, min_prob=0.35, min_ev=-0.03, label="Mixed Legs"):
             seen_match.add(b["match"])
             seen_market.add(mkt)
             seen_sport.add(b["sport"])
-            if len(seen_market) >= 3:
+            if len(seen_market) >= 3 or len(legs) >= max_legs:
                 break
-        if len(seen_market) >= 3:
+        if len(seen_market) >= 3 or len(legs) >= max_legs:
+            break
+    # top up toward max_legs, always feeding the least-used market
+    while len(legs) < max_legs:
+        counts = {m: sum(1 for l in legs if l.get("market", "ML") == m)
+                  for m in ("ML", "Spread", "Total")}
+        placed = False
+        for mkt in sorted(counts, key=lambda m: counts[m]):
+            cand = next((b for b in pool if b["match"] not in seen_match
+                         and b.get("market", "ML") == mkt), None)
+            if cand:
+                legs.append(cand)
+                seen_match.add(cand["match"])
+                placed = True
+                break
+        if not placed:
             break
     if len(legs) < 2:
         return None
@@ -508,7 +530,7 @@ def build_mixed_parlay(flat, min_prob=0.35, min_ev=-0.03, label="Mixed Legs"):
                      note="One leg each from different markets (ML · Spread · Total)")
 
 
-def build_parlay_suite(all_bets, min_leg_prob=0.0):
+def build_parlay_suite(all_bets, min_leg_prob=0.0, mixed_max_legs=3):
     """Curated parlays spanning the risk spectrum. `min_leg_prob` (0-1) is the
     floor each leg's fair probability must clear."""
     flat = [b for sport in all_bets.values() for b in sport]
@@ -519,7 +541,8 @@ def build_parlay_suite(all_bets, min_leg_prob=0.0):
                           label="Most Likely to Hit",
                           note="Highest-probability favorites · best available price")
     modest = build_target_payout_parlay(flat, lo=1.5, hi=2.0, min_prob=min_leg_prob)
-    mixed = build_mixed_parlay(flat, min_prob=max(0.35, min_leg_prob))
+    mixed = build_mixed_parlay(flat, min_prob=max(0.35, min_leg_prob),
+                               max_legs=mixed_max_legs)
     balanced = build_parlay(pos, max_legs=3, rank="prob", min_prob=min_leg_prob,
                            label="Balanced +EV",
                            note="Three +EV picks with the best shot to hit")

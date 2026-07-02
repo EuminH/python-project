@@ -404,9 +404,15 @@ if page == "🏠 Daily Intelligence":
     leg_note = f" · legs ≥ {min_leg_prob}% to hit" if min_leg_prob > 0 else ""
     st.markdown(f'<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">🎰 Best parlays — by probability & EV{leg_note}</div>', unsafe_allow_html=True)
 
-    if parlays:
-        pcols = st.columns(len(parlays))
-        for col, p in zip(pcols, parlays):
+    def render_parlay_cards(plist):
+        if not plist:
+            msg = "Not enough qualifying legs to build a parlay right now."
+            if min_leg_prob > 0:
+                msg += f" Your Leg-Probability filter ({min_leg_prob}%) may be too high — lower it in the sidebar."
+            st.info(msg)
+            return
+        pcols = st.columns(len(plist))
+        for col, p in zip(pcols, plist):
             with col:
                 ev_color = "#22c55e" if p["ev"] > 0 else "#ef4444"
                 ev_sign = "+" if p["ev"] >= 0 else ""
@@ -414,9 +420,12 @@ if page == "🏠 Daily Intelligence":
                 for l in p["legs"]:
                     am = f"+{l['american']}" if l['american'] > 0 else str(l['american'])
                     legs_html += (
-                        '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #111127">'
-                        f'<span style="color:#e2e8f0;font-size:12px">{SPORT_TAGS.get(l["sport"],"")} {l["pick"][:18]}</span>'
+                        '<div style="padding:6px 0;border-bottom:1px solid #111127">'
+                        '<div style="display:flex;justify-content:space-between">'
+                        f'<span style="color:#e2e8f0;font-size:12px">{SPORT_TAGS.get(l["sport"],"")} {l["pick"][:24]}</span>'
                         f'<span style="color:#94a3b8;font-size:12px">{am} · {l["book"][:2].upper()}</span></div>'
+                        f'<div style="color:#64748b;font-size:10px;margin-top:1px">{l.get("market","ML")} · {l["match"][:30]}</div>'
+                        '</div>'
                     )
                 st.markdown(
                     '<div class="best-play-card">'
@@ -434,11 +443,48 @@ if page == "🏠 Daily Intelligence":
                     '</div></div>',
                     unsafe_allow_html=True)
         st.caption("Hit prob assumes independent legs (de-vigged fair odds). Payout = $1 → $X. A +EV parlay needs every leg +EV; the 'Most Likely' parlay favors win-rate over EV.")
-    else:
-        msg = "Not enough qualifying legs to build a parlay right now."
-        if min_leg_prob > 0:
-            msg += f" Your Leg-Probability filter ({min_leg_prob}%) may be too high — lower it in the sidebar."
-        st.info(msg)
+
+    ptab_all, ptab_focus = st.tabs(["🌐 All sports & markets", "🎾🌍 Tennis + World Cup mix · ⚾ MLB wins only"])
+
+    with ptab_all:
+        render_parlay_cards(parlays)
+
+    with ptab_focus:
+        # MLB restricted to moneyline (wins) only. Tennis + World Cup spreads/
+        # totals don't exist on the bulk feed, so we harvest them from the
+        # per-event side-bet endpoint for the soonest games (cached 15 min).
+        from live_data import get_event_odds
+        from value_betting import side_bets_for_event, CONSENSUS_BOOKS
+
+        @st.cache_data(ttl=900, show_spinner="Fetching tennis & World Cup side lines…")
+        def _focus_side(_d, _bb):
+            plan = [("ATP Wimbledon", "alternate_spreads,alternate_totals", 2),
+                    ("WTA Wimbledon", "alternate_spreads,alternate_totals", 2),
+                    ("World Cup", "alternate_spreads,alternate_totals,btts", 2)]
+            rows = []
+            bb = list(_bb) if _bb else None
+            for sport, mk, n in plan:
+                evs = sorted(raw.get(sport, []), key=lambda e: e.get("commence_time", ""))[:n]
+                for e in evs:
+                    evd = get_event_odds(SPORTS[sport], e["id"], mk, books=CONSENSUS_BOOKS)
+                    for r in side_bets_for_event(evd, sport, bb):
+                        if r["mode"] != "fair":
+                            continue
+                        cat = "Spread" if "spread" in r["market_key"] else "Total"
+                        r = dict(r)
+                        r["pick"] = f"{r['pick']} ({r['market']})"
+                        r["market"] = cat
+                        rows.append(r)
+            return rows
+
+        side_rows = _focus_side(f"{today}-v2", tuple(BET_BOOKS) if BET_BOOKS else ())
+        focus_data = {s: ([b for b in v if b.get("market", "ML") == "ML"] if s == "MLB" else v)
+                      for s, v in data.items()}
+        focus_data["_side"] = side_rows
+        focus_parlays = build_parlay_suite(focus_data, min_leg_prob=min_leg_prob / 100,
+                                           mixed_max_legs=5)
+        st.markdown(f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">⚾ Baseball legs limited to <b>moneyline wins</b> · 🎾🌍 {len(side_rows)} tennis &amp; World Cup spread/total/BTTS side-lines pulled for the soonest games (≈14 API credits, refreshes every 15 min) · Mixed builds up to <b>5 legs</b>.</div>', unsafe_allow_html=True)
+        render_parlay_cards(focus_parlays)
 
     # ── PER-SPORT EV TABLES ─────────────────────────────────────────────────
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
