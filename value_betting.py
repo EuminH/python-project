@@ -1,5 +1,5 @@
 """
-Value betting engine — finds +EV bets and builds parlays.
+Value betting engine — finds +EV bets and builds parlays. (build 2)
 
 Method: consensus de-vigging + line shopping.
   1. For each game, pull h2h / spreads / totals odds from up to 8 US books.
