@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # local .env fallback (does not override secrets already set above)
 
-from live_data import get_live_odds, get_best_lines, get_espn_scores, get_espn_standings
+from live_data import get_live_odds, get_best_lines, get_espn_scores, get_espn_standings, get_quota
 from ml_betting import load_data, build_features, backtest, vig, kelly_fraction, FEATURE_COLS, predict_upcoming
 from sports_betting import load_bets, save_bets, american_to_decimal, american_implied_prob, payout, profit
 
@@ -195,16 +195,16 @@ date_str = now.strftime("%A, %b %-d, %Y")
 if page == "🏠 Daily Intelligence":
     import datetime as _dt
     from value_betting import (fetch_events, value_bets, build_parlay_suite, kelly_stake,
-                               SPORTS, SPORT_TAGS)
+                               snapshot_closing, SPORTS, SPORT_TAGS)
 
     today = _dt.date.today()
     tomorrow = today + _dt.timedelta(days=1)
     range_str = f"{today.strftime('%a %b %-d')} – {tomorrow.strftime('%a %b %-d')}"
 
-    # Sportsbook selector — which book's prices to bet at (fair % always uses both)
+    # Sportsbook selector — which book's prices to bet at (fair % uses the full consensus)
     book_choice = st.sidebar.radio("Sportsbook to bet at",
                                    ["Best of both", "FanDuel only", "DraftKings only"],
-                                   help="Which book you'll actually place bets at. Fair % always uses BOTH books for the truth estimate; this only changes which price (and EV) you're shown.")
+                                   help="Which book you'll actually place bets at. Fair % always uses the full multi-book consensus; this only changes which price (and EV) you're shown.")
     BET_BOOKS = {"Best of both": None, "FanDuel only": ["fanduel"], "DraftKings only": ["draftkings"]}[book_choice]
     book_short = {"Best of both": "FD · DK", "FanDuel only": "FanDuel", "DraftKings only": "DraftKings"}[book_choice]
     book_sub = {"Best of both": "best line taken", "FanDuel only": "FanDuel prices", "DraftKings only": "DraftKings prices"}[book_choice]
@@ -216,7 +216,7 @@ if page == "🏠 Daily Intelligence":
         <div class="topbar-left">
             <div style="width:10px;height:10px;border-radius:50%;background:#22c55e"></div>
             <span class="sport-badge">VALUE FINDER</span>
-            <span class="topbar-sub">· {topbar_books} · TODAY & TOMORROW</span>
+            <span class="topbar-sub">· {topbar_books} · TODAY & TOMORROW · 8-BOOK CONSENSUS</span>
         </div>
         <div class="topbar-date">{range_str}</div>
     </div>
@@ -226,15 +226,35 @@ if page == "🏠 Daily Intelligence":
     min_ev_pct = st.sidebar.slider("Min EV to recommend (%)", 0.0, 10.0, 0.0, 0.5)
     min_leg_prob = st.sidebar.slider("Min leg probability for parlays (%)", 0, 90, 0, 5,
                                      help="Only build parlays from legs at least this likely to hit. Raise it for safer, more-likely-to-hit parlays.")
+    market_filter = st.sidebar.multiselect("Markets", ["ML", "Spread", "Total"],
+                                           default=["ML", "Spread", "Total"],
+                                           help="ML = moneyline (who wins). Spread = handicap. Total = over/under.")
 
-    # Cache the raw API fetch only — switching book/sliders re-computes locally, no re-fetch
-    @st.cache_data(ttl=300, show_spinner="Scanning FanDuel + DraftKings for value…")
+    # Cache the raw API fetch only — switching book/market/sliders re-computes locally
+    @st.cache_data(ttl=300, show_spinner="Scanning the books for value…")
     def load_events(_d):
-        return fetch_events(days=2)
+        ev = fetch_events(days=2)
+        snapshot_closing(ev)   # keep latest pre-kickoff prices for CLV grading
+        return ev
 
-    raw = load_events(str(today))
+    raw = load_events(f"{today}-v2")
     data = value_bets(raw, min_ev=-1.0, bet_books=BET_BOOKS)
+    if set(market_filter) != {"ML", "Spread", "Total"}:
+        data = {s: [b for b in v if b.get("market", "ML") in market_filter]
+                for s, v in data.items()}
     parlays = build_parlay_suite(data, min_leg_prob=min_leg_prob / 100)
+
+    # API quota meter (The Odds API free tier = 500 credits/month)
+    _q = get_quota()
+    if _q:
+        _pct = max(0.0, min(1.0, _q["remaining"] / (_q["remaining"] + _q["used"]))) if (_q["remaining"] + _q["used"]) else 0
+        st.sidebar.markdown(
+            f'<div style="margin-top:8px;padding:8px 10px;background:#111127;border-radius:8px;border:1px solid #1e1e3a">'
+            f'<div style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">API credits left</div>'
+            f'<div style="color:{"#22c55e" if _q["remaining"]>100 else "#f59e0b" if _q["remaining"]>25 else "#ef4444"};font-size:16px;font-weight:700">{_q["remaining"]:.0f}</div>'
+            f'<div style="background:#1e1e3a;border-radius:3px;height:5px;margin-top:4px"><div style="background:#f97316;height:100%;border-radius:3px;width:{_pct*100:.0f}%"></div></div>'
+            f'<div style="color:#475569;font-size:10px;margin-top:3px">used {_q["used"]:.0f} · as of {_q["ts"][11:16]}</div></div>',
+            unsafe_allow_html=True)
 
     # Flatten + split
     all_priced = [b for bets in data.values() for b in bets]
@@ -292,6 +312,7 @@ if page == "🏠 Daily Intelligence":
             '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
             '<th style="text-align:left;padding:6px 8px 6px 0;font-weight:500">SPORT</th>'
             '<th style="text-align:left;padding:6px 8px;font-weight:500">BET (PICK)</th>'
+            '<th style="text-align:center;padding:6px 8px;font-weight:500">MARKET</th>'
             '<th style="text-align:left;padding:6px 8px;font-weight:500">MATCH</th>'
             '<th style="text-align:center;padding:6px 8px;font-weight:500">BOOK</th>'
             '<th style="text-align:right;padding:6px 8px;font-weight:500">ODDS</th>'
@@ -310,6 +331,7 @@ if page == "🏠 Daily Intelligence":
                 '<tr style="border-bottom:1px solid #111127">'
                 f'<td style="color:#94a3b8;padding:7px 8px 7px 0;font-size:11px">{SPORT_TAGS.get(b["sport"],"")} {b["sport"]}</td>'
                 f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{b["pick"][:22]}</td>'
+                f'<td style="text-align:center;padding:7px 8px"><span style="background:#7c3aed22;color:#a78bfa;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">{b.get("market","ML")}</span></td>'
                 f'<td style="color:#64748b;padding:7px 8px;font-size:11px">{b["match"][:30]}</td>'
                 f'<td style="text-align:center;padding:7px 8px"><span style="background:{book_color}22;color:{book_color};padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">{b["book"]}</span></td>'
                 f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{am}</td>'
@@ -322,9 +344,59 @@ if page == "🏠 Daily Intelligence":
             '<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
             '<table style="width:100%;border-collapse:collapse;font-size:12px">' + head + body + '</table></div>',
             unsafe_allow_html=True)
-        st.caption(f"Fair % = de-vigged consensus of FanDuel & DraftKings. EV = edge at the best price. Stake = ½-Kelly on ${bankroll:,.0f}. Place each bet at the listed book.")
+        st.caption(f"Fair % = median power-devig consensus of up to 8 US books (corrects longshot bias). EV = edge at your book's price. Stake = ½-Kelly on ${bankroll:,.0f}.")
+
+        # ── Inspect & log a bet ─────────────────────────────────────────────
+        with st.expander("🔍 Inspect a pick — full math, every book's price, log the bet"):
+            opts = {f"{i+1}. {b['pick']} [{b.get('market','ML')}] · {b['match'][:26]} · {b['book']}": b
+                    for i, b in enumerate(recs[:25])}
+            sel = st.selectbox("Pick to inspect", list(opts.keys()))
+            b = opts[sel]
+            stake_sug = kelly_stake(b["fair_prob"], b["decimal"], bankroll)
+            imp_at_book = 1 / b["decimal"] * 100
+
+            ic1, ic2 = st.columns([1.1, 0.9])
+            with ic1:
+                st.markdown(
+                    '<div style="background:#111127;border-radius:10px;padding:14px;font-size:13px;line-height:2;color:#cbd5e1">'
+                    f'<b style="color:#e2e8f0">The math for this pick</b><br>'
+                    f'Your book\'s implied probability: <b>{imp_at_book:.1f}%</b> (1 ÷ {b["decimal"]:.3f})<br>'
+                    f'Consensus fair probability: <b style="color:#a78bfa">{b["fair_prob"]*100:.1f}%</b> (median of {b["n_books"]} books, power de-vig)<br>'
+                    f'Edge: <b style="color:#22c55e">{(b["fair_prob"]-1/b["decimal"])*100:+.1f} points</b><br>'
+                    f'EV = {b["fair_prob"]:.3f} × {b["decimal"]:.3f} − 1 = <b style="color:#22c55e">{b["ev_per_100"]:+.2f} per $100</b><br>'
+                    f'Market width (book disagreement): <b>{b["width"]:.1f}%</b> — {"wide, treat with caution" if b["width"] > 8 else "tight, consensus is solid"}'
+                    '</div>', unsafe_allow_html=True)
+            with ic2:
+                rows_html = "".join(
+                    f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1a1a2e">'
+                    f'<span style="color:{"#f97316" if t == b["book"] else "#94a3b8"};font-size:12px">{t}{" ← bet here" if t == b["book"] else ""}</span>'
+                    f'<span style="color:#e2e8f0;font-size:12px;font-weight:600">{"+" if a > 0 else ""}{a}</span></div>'
+                    for t, a in sorted(b["all_prices"].items(), key=lambda kv: -kv[1]))
+                st.markdown(
+                    '<div style="background:#111127;border-radius:10px;padding:14px">'
+                    '<div style="color:#64748b;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Every book\'s price</div>'
+                    + rows_html + '</div>', unsafe_allow_html=True)
+
+            lc1, lc2 = st.columns([1, 1])
+            log_stake = lc1.number_input("Stake to log ($)", 1.0, 100000.0,
+                                         float(max(1.0, round(stake_sug, 2))), 1.0)
+            if lc2.button("➕ Log this bet to Bet Tracker", use_container_width=True):
+                bets_file = load_bets()
+                bets_file.append({
+                    "id": int(datetime.datetime.now().timestamp()),
+                    "date": datetime.date.today().isoformat(),
+                    "sport": b["sport"], "event": b["match"],
+                    "pick": b["pick"], "odds": int(b["american"]),
+                    "stake": float(log_stake), "book": b["book"],
+                    "result": "pending", "payout": 0.0,
+                    "market": b.get("market", "ML"),
+                    "logged_dec": b["decimal"], "fair_prob": b["fair_prob"],
+                    "commence": b.get("commence", ""),
+                })
+                save_bets(bets_file)
+                st.success(f"Logged: {b['pick']} ({b['american']:+d} @ {b['book']}) — ${log_stake:.2f}. Track it in 📋 Bet Tracker.")
     else:
-        st.markdown('<div style="color:#94a3b8;font-size:13px;padding:18px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No bets clear your EV threshold right now — FanDuel and DraftKings are tightly aligned. Lower the "Min EV" slider or check back; lines move all day.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="color:#94a3b8;font-size:13px;padding:18px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No bets clear your EV threshold right now — with the 8-book consensus, real edges are rarer but trustworthy. Lower the "Min EV" slider or check back; lines move all day.</div>', unsafe_allow_html=True)
 
     # ── BEST PARLAYS ────────────────────────────────────────────────────────
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
@@ -376,21 +448,24 @@ if page == "🏠 Daily Intelligence":
         with tab:
             bets = sorted(data.get(sport, []), key=lambda x: (x["date"], x["time"], -x["ev"]))
             if not bets:
-                st.markdown(f'<div style="color:#64748b;font-size:13px;padding:16px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No {sport} games today or tomorrow with both books priced.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="color:#64748b;font-size:13px;padding:16px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No {sport} games today or tomorrow with a multi-book consensus.</div>', unsafe_allow_html=True)
                 continue
             head = (
                 '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
                 '<th style="text-align:left;padding:6px 8px 6px 0;font-weight:500">MATCH</th>'
                 '<th style="text-align:left;padding:6px 8px;font-weight:500">PICK</th>'
-                '<th style="text-align:center;padding:6px 8px;font-weight:500">BEST BOOK</th>'
+                '<th style="text-align:center;padding:6px 8px;font-weight:500">MKT</th>'
+                '<th style="text-align:center;padding:6px 8px;font-weight:500">BOOK</th>'
                 '<th style="text-align:right;padding:6px 8px;font-weight:500">ODDS</th>'
                 '<th style="text-align:right;padding:6px 8px;font-weight:500">FAIR%</th>'
+                '<th style="text-align:right;padding:6px 8px;font-weight:500">#BKS</th>'
                 '<th style="text-align:right;padding:6px 8px;font-weight:500">EV/$100</th>'
                 '<th style="text-align:center;padding:6px 8px;font-weight:500">VERDICT</th>'
                 '<th style="text-align:right;padding:6px 0;font-weight:500">KICKOFF</th></tr>'
             )
             body = ""
-            for b in bets:
+            shown = bets[:80]
+            for b in shown:
                 am = f"+{b['american']}" if b['american'] > 0 else str(b['american'])
                 pos = b["ev"] > 0
                 ev_color = "#22c55e" if pos else "#64748b"
@@ -401,9 +476,11 @@ if page == "🏠 Daily Intelligence":
                     '<tr style="border-bottom:1px solid #111127">'
                     f'<td style="color:#64748b;padding:7px 8px 7px 0;font-size:11px">{b["match"][:26]}</td>'
                     f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{b["pick"][:20]}</td>'
+                    f'<td style="text-align:center;padding:7px 8px"><span style="background:#7c3aed22;color:#a78bfa;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">{b.get("market","ML")}</span></td>'
                     f'<td style="text-align:center;padding:7px 8px"><span style="color:{book_color};font-size:11px;font-weight:600">{b["book"]}</span></td>'
                     f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{am}</td>'
                     f'<td style="color:#94a3b8;text-align:right;padding:7px 8px">{b["fair_prob"]*100:.1f}%</td>'
+                    f'<td style="color:#64748b;text-align:right;padding:7px 8px">{b.get("n_books","")}</td>'
                     f'<td style="color:{ev_color};text-align:right;padding:7px 8px;font-weight:700">{"+" if pos else ""}${b["ev_per_100"]:.2f}</td>'
                     f'<td style="text-align:center;padding:7px 8px">{verdict}</td>'
                     f'<td style="color:#64748b;text-align:right;padding:7px 0;font-size:11px">{b["date"][5:]} {b["time"][:5]}</td></tr>'
@@ -413,7 +490,8 @@ if page == "🏠 Daily Intelligence":
                 '<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
                 '<table style="width:100%;border-collapse:collapse;font-size:12px">' + head + body + '</table></div>',
                 unsafe_allow_html=True)
-            st.caption(f"{len(bets)} priced outcomes · {n_bet} rated BET (+EV). Both books required for a fair line.")
+            extra = f" (showing first {len(shown)})" if len(bets) > len(shown) else ""
+            st.caption(f"{len(bets)} priced outcomes{extra} · {n_bet} rated BET (+EV) · #BKS = books in the consensus for that line.")
 
 
 
@@ -445,7 +523,8 @@ elif page == "📖 How It Works":
             <div style="color:#e2e8f0;font-size:18px;font-weight:700;margin:6px 0 10px">The real chance of winning</div>
             <div style="color:#94a3b8;font-size:13px;line-height:1.6;margin-bottom:12px">
             Bookmakers bake a profit margin (the <i>"vig"</i>) into their odds, so their numbers add up to more than 100%.
-            <b>Fair %</b> strips that margin out to estimate the <b>true</b> probability — and we average FanDuel and DraftKings so it's not one book's opinion.
+            <b>Fair %</b> strips that margin with the <b>power method</b> (which corrects the bias books have on longshots),
+            then takes the <b>median across up to 8 US books</b> — so it's the market's consensus, not one book's opinion.
             </div>
             <div style="background:#0d0d1a;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:12px;color:#cbd5e1;line-height:1.7">
             implied = 1 / decimal&nbsp;odds<br>
@@ -781,20 +860,23 @@ elif page == "🧩 Build My Parlay":
     def _load_events_bp(_d):
         return fetch_events(days=2)
 
-    data = value_bets(_load_events_bp(str(bp_today)), min_ev=-1.0, bet_books=BP_BOOKS)
+    data = value_bets(_load_events_bp(f"{bp_today}-v2"), min_ev=-1.0, bet_books=BP_BOOKS)
     pool_all = [b for bets in data.values() for b in bets]
 
     if not pool_all:
         st.info("No games priced on FanDuel + DraftKings right now — check back closer to game time.")
     else:
         sports_present = [s for s in SPORTS if data.get(s)]
-        chosen_sports = st.multiselect("Sports to choose from", sports_present, default=sports_present)
-        pool = [b for b in pool_all if b["sport"] in chosen_sports]
+        fc1, fc2 = st.columns([1.4, 1])
+        chosen_sports = fc1.multiselect("Sports to choose from", sports_present, default=sports_present)
+        chosen_markets = fc2.multiselect("Markets", ["ML", "Spread", "Total"], default=["ML", "Spread", "Total"])
+        pool = [b for b in pool_all if b["sport"] in chosen_sports
+                and b.get("market", "ML") in chosen_markets]
         pool.sort(key=lambda b: (b["sport"], b["date"], b["time"], b["match"]))
 
         def leg_label(b):
             am = f"+{b['american']}" if b["american"] > 0 else str(b["american"])
-            return (f"{SPORT_TAGS.get(b['sport'],'')} {b['match']} → {b['pick']}  "
+            return (f"{SPORT_TAGS.get(b['sport'],'')} {b['match']} → {b['pick']} ({b.get('market','ML')})  "
                     f"[{am} · {b['book']} · fair {b['fair_prob']*100:.0f}% · EV {b['ev_per_100']:+.1f}]  "
                     f"{b['date'][5:]} {b['time'][:5]}")
 
@@ -822,8 +904,12 @@ elif page == "🧩 Build My Parlay":
             am_combined = _american_from_decimal(cd)
             kelly = kelly_stake(cp, cd, bankroll)   # suggested ½-Kelly stake (0 if no edge)
 
-            game_counts = Counter((l["sport"], l["match"], l["date"], l["time"]) for l in legs)
-            conflicts = [g for g, c in game_counts.items() if c > 1]
+            # Hard conflict: two legs from the same game AND market (can't both win).
+            # Soft warning: same game, different markets (correlated — EV math assumes independence).
+            hard_counts = Counter((l["sport"], l["match"], l.get("market", "ML")) for l in legs)
+            conflicts = [g for g, c in hard_counts.items() if c > 1]
+            game_counts = Counter((l["sport"], l["match"]) for l in legs)
+            correlated = [g for g, c in game_counts.items() if c > 1] if not conflicts else []
 
             # ── Selected legs table ─────────────────────────────────────────
             head = (
@@ -845,7 +931,7 @@ elif page == "🧩 Build My Parlay":
                 body += (
                     '<tr style="border-bottom:1px solid #111127">'
                     f'<td style="color:#64748b;padding:7px 8px 7px 0">{i}</td>'
-                    f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{SPORT_TAGS.get(l["sport"],"")} {l["pick"][:20]}</td>'
+                    f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{SPORT_TAGS.get(l["sport"],"")} {l["pick"][:20]} <span style="background:#7c3aed22;color:#a78bfa;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600">{l.get("market","ML")}</span></td>'
                     f'<td style="color:#64748b;padding:7px 8px;font-size:11px">{l["match"][:28]}</td>'
                     f'<td style="text-align:center;padding:7px 8px"><span style="color:{book_color};font-size:11px;font-weight:600">{l["book"]}</span></td>'
                     f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{am}</td>'
@@ -874,8 +960,8 @@ elif page == "🧩 Build My Parlay":
 
             # ── Verdict ─────────────────────────────────────────────────────
             if conflicts:
-                vc, icon, vtitle = "#ef4444", "⚠️", "SAME-GAME CONFLICT"
-                vmsg = f"You picked {sum(c for _,c in game_counts.items() if c>1)} legs from the same game — they can't all win, so this isn't a real parlay. Remove the duplicate side."
+                vc, icon, vtitle = "#ef4444", "⚠️", "SAME-MARKET CONFLICT"
+                vmsg = "You picked two sides of the same market in one game (e.g. both teams' ML, or Over AND Under) — they can't both win, so this isn't a real parlay. Remove one."
             elif ev > 0.03:
                 vc, icon, vtitle = "#22c55e", "✅", "WORTH IT — STRONG +EV"
                 vmsg = f"+{ev*100:.1f}% expected value. Suggested ½-Kelly stake: <b>${kelly:,.2f}</b> on your ${bankroll:,.0f} bankroll. Hits {cp*100:.1f}% of the time for {cd:.2f}x."
@@ -896,7 +982,33 @@ elif page == "🧩 Build My Parlay":
                 '</div>',
                 unsafe_allow_html=True)
 
-            st.caption("EV uses the de-vigged FanDuel/DraftKings consensus as the true probability. Hit% assumes legs are independent (true across different games, not within one). A leg with grey EV is −EV on its own and drags the parlay down.")
+            if correlated:
+                st.markdown(
+                    '<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:12px 16px;margin-top:10px">'
+                    '<div style="color:#fbbf24;font-size:12px;line-height:1.6">⚠️ Two of your legs come from the <b>same game</b> in different markets '
+                    '(e.g. a team\'s ML + the total). They\'re <b>correlated</b>, so the hit% and EV above — which assume independence — are off. '
+                    'Books usually make you price this as a same-game parlay with worse odds.</div></div>',
+                    unsafe_allow_html=True)
+
+            # Log the whole parlay to the tracker
+            if not conflicts and st.button(f"➕ Log this parlay (${stake:.0f} at {am_combined})"):
+                bets_file = load_bets()
+                bets_file.append({
+                    "id": int(datetime.datetime.now().timestamp()),
+                    "date": datetime.date.today().isoformat(),
+                    "sport": "Parlay",
+                    "event": " + ".join(l["pick"] for l in legs)[:90],
+                    "pick": f"{len(legs)}-leg parlay",
+                    "odds": int(am_combined),
+                    "stake": float(stake), "book": bp_book_choice,
+                    "result": "pending", "payout": 0.0,
+                    "market": "Parlay", "logged_dec": cd, "fair_prob": cp,
+                    "commence": min(l.get("commence", "") for l in legs),
+                })
+                save_bets(bets_file)
+                st.success(f"Parlay logged — ${stake:.0f} to win ${payout - stake:,.2f}. Track it in 📋 Bet Tracker.")
+
+            st.caption("Fair % = median power-devig consensus of up to 8 US books. Hit% assumes legs are independent (true across different games). A leg with grey EV is −EV on its own and drags the parlay down.")
 
 
 elif page == "📋 Bet Tracker":
@@ -918,7 +1030,19 @@ elif page == "📋 Bet Tracker":
                               "book":book,"result":"pending","payout":0.0})
                 save_bets(bets); st.success(f"Logged! Potential profit: ${profit(stake,int(odds)):.2f}")
     with tab2:
+        from value_betting import closing_price
         bets=load_bets()
+
+        def bet_clv(b):
+            """Closing Line Value % vs the last pre-kickoff price. None if ungraded."""
+            if not b.get("logged_dec") or b.get("market") in (None, "Parlay"):
+                return None
+            close = closing_price(b.get("sport",""), b.get("event",""),
+                                  b.get("market","ML"), b.get("pick",""))
+            if not close or not close.get("decimal"):
+                return None
+            return (b["logged_dec"] / close["decimal"] - 1) * 100
+
         if not bets:
             st.info("No bets logged yet.")
         else:
@@ -937,14 +1061,20 @@ elif page == "📋 Bet Tracker":
                         save_bets(bets); st.rerun()
             settled=[b for b in bets if b['result']!='pending']
             if settled:
+                def clv_str(b):
+                    v = bet_clv(b)
+                    return f"{v:+.1f}%" if v is not None else "—"
                 rows=[{'Date':b['date'],'Event':b['event'],'Pick':b['pick'],'Odds':f"{b['odds']:+d}",
                        'Stake':f"${b['stake']:.2f}",'Result':b['result'],
-                       'P&L':f"${b['payout']-b['stake']:+.2f}"} for b in settled]
+                       'P&L':f"${b['payout']-b['stake']:+.2f}",'CLV':clv_str(b)} for b in settled]
                 st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
                 total_staked=sum(b['stake'] for b in settled); total_pnl=sum(b['payout']-b['stake'] for b in settled)
                 wins=sum(1 for b in settled if b['result']=='win')
-                c1,c2,c3=st.columns(3)
+                clvs=[v for v in (bet_clv(b) for b in bets) if v is not None]
+                c1,c2,c3,c4=st.columns(4)
                 c1.metric("Total staked",f"${total_staked:.2f}"); c2.metric("P&L",f"${total_pnl:+.2f}"); c3.metric("Record",f"{wins}W-{len(settled)-wins}L")
+                c4.metric("Avg CLV",f"{sum(clvs)/len(clvs):+.1f}%" if clvs else "—",
+                          help="Closing Line Value: how much better your logged price was than the final pre-kickoff price. Consistently positive CLV is the strongest evidence you're beating the market — it shows up long before P&L does.")
                 pnl_curve=[0]
                 for b in sorted(settled,key=lambda x:x['date']):
                     pnl_curve.append(pnl_curve[-1]+(b['payout']-b['stake']))

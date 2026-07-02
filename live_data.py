@@ -7,6 +7,7 @@ Live data feeds:
 import json
 import urllib.request
 import os
+import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,13 +15,35 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 ODDS_BASE = "https://api.the-odds-api.com/v4"
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports"
 
+QUOTA_FILE = "quota.json"
+
 
 def _get(url, timeout=10):
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
+            # The Odds API reports remaining monthly credits in headers —
+            # persist the latest reading so the app can show a quota meter.
+            rem = r.headers.get("x-requests-remaining")
+            if rem is not None:
+                try:
+                    with open(QUOTA_FILE, "w") as f:
+                        json.dump({"remaining": float(rem),
+                                   "used": float(r.headers.get("x-requests-used", 0) or 0),
+                                   "ts": datetime.datetime.now().isoformat(timespec="seconds")}, f)
+                except Exception:
+                    pass
             return json.loads(r.read())
     except Exception as e:
         print(f"  [!] Request failed: {e}")
+        return None
+
+
+def get_quota():
+    """Latest known The Odds API credit usage, or None if never recorded."""
+    try:
+        with open(QUOTA_FILE) as f:
+            return json.load(f)
+    except Exception:
         return None
 
 

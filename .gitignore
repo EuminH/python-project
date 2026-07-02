@@ -7,8 +7,10 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Local user data
+# Local user data / runtime artifacts
 bets.json
+closing_lines.json
+quota.json
 
 # OS
 .DS_Store
