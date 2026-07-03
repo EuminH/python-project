@@ -47,6 +47,12 @@ def get_quota():
         return None
 
 
+def get_sports_list():
+    """All sports The Odds API knows about, with their active flags.
+    This endpoint is FREE — it does not consume quota credits."""
+    return _get(f"{ODDS_BASE}/sports/?apiKey={ODDS_API_KEY}") or []
+
+
 # ── The Odds API ───────────────────────────────────────────────────────────
 
 SPORT_KEYS = {
@@ -154,6 +160,7 @@ ESPN_SPORTS = {
     "nfl":  ("football", "nfl"),
     "nhl":  ("hockey", "nhl"),
     "epl":  ("soccer", "eng.1"),
+    "worldcup": ("soccer", "fifa.world"),
     "ncaaf":("football", "college-football"),
     "ncaab":("basketball", "mens-college-basketball"),
 }

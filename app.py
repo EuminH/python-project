@@ -29,6 +29,34 @@ from sports_betting import load_bets, save_bets, american_to_decimal, american_i
 
 st.set_page_config(page_title="Sports Betting Intelligence", page_icon="⚡", layout="wide")
 
+# ── Optional password gate ──────────────────────────────────────────────────
+# Set APP_PASSWORD in Streamlit Cloud Secrets to require a password (protects
+# your API quota on the public URL). No secret set = no gate (local use).
+try:
+    _app_pw = st.secrets.get("APP_PASSWORD", "")
+except Exception:
+    _app_pw = ""
+if _app_pw:
+    if not st.session_state.get("pw_ok"):
+        st.markdown("### 🔒 Enter password")
+        _entered = st.text_input("Password", type="password", label_visibility="collapsed")
+        if _entered == _app_pw:
+            st.session_state["pw_ok"] = True
+            st.rerun()
+        elif _entered:
+            st.error("Wrong password.")
+        st.stop()
+
+# ── CLV snapshot guard ──────────────────────────────────────────────────────
+# Background thread that captures closing lines just before kickoff when no
+# visitor has refreshed recently. Quota-aware; starts once per process.
+@st.cache_resource
+def _start_clv_guard():
+    from value_betting import start_clv_daemon
+    return start_clv_daemon()
+
+_start_clv_guard()
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -241,13 +269,13 @@ if page == "🏠 Daily Intelligence":
     sort_key = SORT_KEYS[sort_choice]
 
     # Cache the raw API fetch only — switching book/market/sliders re-computes locally
-    @st.cache_data(ttl=300, show_spinner="Scanning the books for value…")
+    @st.cache_data(ttl=900, show_spinner="Scanning the books for value…")
     def load_events(_d):
         ev = fetch_events(days=2)
         snapshot_closing(ev)   # keep latest pre-kickoff prices for CLV grading
         return ev
 
-    raw = load_events(f"{today}-v2")
+    raw = load_events(f"{today}-v3")
     data = value_bets(raw, min_ev=-1.0, bet_books=BET_BOOKS)
     if set(market_filter) != {"ML", "Spread", "Total"}:
         data = {s: [b for b in v if b.get("market", "ML") in market_filter]
@@ -452,17 +480,18 @@ if page == "🏠 Daily Intelligence":
                     unsafe_allow_html=True)
         st.caption("Hit prob assumes independent legs (de-vigged fair odds). Payout = $1 → $X. A +EV parlay needs every leg +EV; the 'Most Likely' parlay favors win-rate over EV.")
 
-    # Tennis + World Cup spreads/totals don't exist on the bulk feed, so we
-    # harvest them once from the per-event side-bet endpoint (cached 15 min)
-    # and share them across all date tabs.
+    # Soccer spreads/totals/BTTS don't exist on the bulk feed, so we harvest
+    # them from the per-event side-bet endpoint (cached 30 min, soccer only —
+    # tennis books rarely price side lines, so fetching them wasted credits).
     from live_data import get_event_odds
     from value_betting import side_bets_for_event, CONSENSUS_BOOKS
 
-    @st.cache_data(ttl=900, show_spinner="Fetching tennis & World Cup side lines…")
+    @st.cache_data(ttl=1800, show_spinner="Fetching soccer side lines…")
     def _focus_side(_d, _bb):
-        plan = [("ATP Wimbledon", "alternate_spreads,alternate_totals", 2),
-                ("WTA Wimbledon", "alternate_spreads,alternate_totals", 2),
-                ("World Cup", "alternate_spreads,alternate_totals,btts", 2)]
+        # dynamic: whatever soccer competitions are in season right now
+        plan = [(lbl, "alternate_spreads,alternate_totals,btts", 2)
+                for lbl, key in SPORTS.items()
+                if key.startswith("soccer") and raw.get(lbl)]
         rows = []
         bb = list(_bb) if _bb else None
         for sport, mk, n in plan:
@@ -479,7 +508,7 @@ if page == "🏠 Daily Intelligence":
                     rows.append(r)
         return rows
 
-    side_rows_all = _focus_side(f"{today}-v2", tuple(BET_BOOKS) if BET_BOOKS else ())
+    side_rows_all = _focus_side(f"{today}-v3", tuple(BET_BOOKS) if BET_BOOKS else ())
 
     def _by_date(pool, dstr):
         """Filter a {sport: [rows]} pool to a single date (None = keep both days)."""
@@ -504,7 +533,7 @@ if page == "🏠 Daily Intelligence":
                           for s, v in d_data.items()}
                 f_side = [r for r in side_rows_all if not dstr or r.get("date") == dstr]
                 f_data["_side"] = f_side
-                st.markdown(f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">⚾ Baseball legs limited to <b>moneyline wins</b> · 🎾🌍 {len(f_side)} tennis &amp; World Cup spread/total/BTTS side-lines (fetched once for the soonest games, ≈14 API credits / 15 min) · Mixed builds up to <b>5 legs</b>.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">⚾ Baseball legs limited to <b>moneyline wins</b> · ⚽ {len(f_side)} soccer spread/total/BTTS side-lines (soonest games, cached 30 min) · Mixed builds up to <b>5 legs</b>.</div>', unsafe_allow_html=True)
                 render_parlay_cards(build_parlay_suite(f_data, min_leg_prob=min_leg_prob / 100,
                                                        mixed_max_legs=5))
 
@@ -601,16 +630,16 @@ elif page == "🎯 Side Bets":
     st.markdown('<div style="color:#e2e8f0;font-size:24px;font-weight:700;margin-bottom:2px">Side bets &amp; props</div>', unsafe_allow_html=True)
     st.markdown('<div style="color:#94a3b8;font-size:14px;margin-bottom:14px">Pick a game, choose the prop markets you care about, and fetch. Where the market can be de-vigged (goals O/U, corners, BTTS, handicaps) you get a real <b>Fair % and EV</b>. Where it can\'t (goalscorers — many players can score), you get the <b>best price vs the median book</b> instead: pure line-shopping, not an EV claim.</div>', unsafe_allow_html=True)
 
-    @st.cache_data(ttl=300, show_spinner="Loading games…")
+    @st.cache_data(ttl=900, show_spinner="Loading games…")
     def _sb_events(_d):
         return fetch_events(days=2)
 
-    raw = _sb_events(f"{sb_today}-v2")
+    raw = _sb_events(f"{sb_today}-v3")
     sb_sport = st.selectbox("Sport", list(SIDE_MARKETS.keys()),
                             format_func=lambda s: f"{SPORT_TAGS.get(s,'')} {s}")
     events = raw.get(sb_sport, [])
 
-    if sb_sport in ("ATP Wimbledon", "WTA Wimbledon"):
+    if sb_sport.startswith(("ATP", "WTA")):
         st.markdown('<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:10px 14px;margin-bottom:10px;color:#fbbf24;font-size:12px">ℹ️ Heads-up: The Odds API has <b>no set-winner market</b> for tennis — only alternate game handicaps and total games, and FanDuel/DraftKings price those sparsely. Soccer prop coverage is much deeper.</div>', unsafe_allow_html=True)
 
     if not events:
@@ -634,7 +663,7 @@ elif page == "🎯 Side Bets":
         if sel and sel[1] == e0["id"] and set(sel[2]) == set(chosen_keys):
             skey, eid, mkeys, slabel = sel
 
-            @st.cache_data(ttl=300, show_spinner="Fetching prop odds…")
+            @st.cache_data(ttl=900, show_spinner="Fetching prop odds…")
             def _sb_fetch(_skey, _eid, _mkeys):
                 return get_event_odds(_skey, _eid, ",".join(_mkeys), books=CONSENSUS_BOOKS)
 
@@ -891,21 +920,42 @@ elif page == "🤖 ML Model":
     st.title("ML Betting Model")
     st.caption("Gradient Boosting · 6-season training · Probability calibration · Premier League")
 
-    df = load_data()
-    df_feat = build_features(df)
+    # Heavy work cached: features once per process, CV once per day,
+    # backtest per (threshold, stake) combination.
+    @st.cache_resource(show_spinner="Building features (one-time)…")
+    def _ml_features():
+        _df = load_data()
+        return build_features(_df)
 
-    models_dict = {
-        'Logistic Regression': LogisticRegression(max_iter=1000),
-        'Random Forest': RandomForestClassifier(n_estimators=200, random_state=42),
-        'Gradient Boosting': GradientBoostingClassifier(n_estimators=100, learning_rate=0.05, max_depth=2, random_state=42),
-    }
+    @st.cache_data(ttl=86400, show_spinner="Cross-validating models (cached daily)…")
+    def _ml_cv_scores():
+        _feat = _ml_features()
+        models_dict = {
+            'Logistic Regression': LogisticRegression(max_iter=1000),
+            'Random Forest': RandomForestClassifier(n_estimators=200, random_state=42),
+            'Gradient Boosting': GradientBoostingClassifier(n_estimators=100, learning_rate=0.05, max_depth=2, random_state=42),
+        }
+        out = []
+        for name, m in models_dict.items():
+            s = cross_val_score(m, _feat[FEATURE_COLS], _feat['result'], cv=5)
+            out.append({'Model': name, 'Accuracy': round(s.mean()*100,1), 'Std': round(s.std()*100,1)})
+        return out
+
+    @st.cache_data(show_spinner="Running backtest…")
+    def _ml_backtest(threshold, stake):
+        _feat = _ml_features()
+        model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.05, max_depth=2, random_state=42)
+        res = backtest(_feat, model, flat_stake=stake, threshold=threshold)
+        # return only picklable pieces the page uses
+        (bets, flat_staked, flat_return, flat_roi,
+         kelly_staked, kelly_return, kelly_roi,
+         kelly_curve, *_rest) = res
+        return bets, flat_staked, flat_return, flat_roi, kelly_staked, kelly_return, kelly_roi, kelly_curve
+
+    df_feat = _ml_features()
 
     st.subheader("Model accuracy (5-fold CV · 2,280 matches)")
-    acc_data = []
-    for name, m in models_dict.items():
-        s = cross_val_score(m, df_feat[FEATURE_COLS], df_feat['result'], cv=5)
-        acc_data.append({'Model': name, 'Accuracy': round(s.mean()*100,1), 'Std': round(s.std()*100,1)})
-    acc_df = pd.DataFrame(acc_data)
+    acc_df = pd.DataFrame(_ml_cv_scores())
     fig = px.bar(acc_df, x='Model', y='Accuracy', error_y='Std',
                  color='Accuracy', color_continuous_scale=[[0,'#1e1e3a'],[1,'#f97316']],
                  range_y=[40,60])
@@ -918,10 +968,8 @@ elif page == "🤖 ML Model":
     threshold = st.slider("Value bet edge threshold", 0.01, 0.20, 0.05, 0.01, format="%0.2f")
     stake = st.number_input("Flat stake per bet ($)", 1.0, 500.0, 10.0, 5.0)
 
-    model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.05, max_depth=2, random_state=42)
     (bets, flat_staked, flat_return, flat_roi,
-     kelly_staked, kelly_return, kelly_roi,
-     kelly_curve, trained_model, classes, fcols, test_df, probs) = backtest(df_feat, model, flat_stake=stake, threshold=threshold)
+     kelly_staked, kelly_return, kelly_roi, kelly_curve) = _ml_backtest(threshold, stake)
 
     wins = sum(1 for b in bets if b['win'])
     c1,c2,c3,c4 = st.columns(4)
@@ -977,10 +1025,21 @@ elif page == "🤖 ML Model":
 elif page == "📡 Live Odds":
     st.title("Live Odds")
     sport = st.selectbox("Sport", ["nfl","nba","mlb","nhl","epl"], format_func=str.upper)
+
+    # cache both feeds so revisits don't burn Odds API credits
+    @st.cache_data(ttl=900, show_spinner="Fetching odds…")
+    def _lo_odds(s):
+        return get_live_odds(s)
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _lo_scores(s):
+        return get_espn_scores(s)
+
+    lo_events = _lo_odds(sport)
     col1,col2 = st.columns(2)
     with col1:
         st.subheader("Live scores")
-        games = get_espn_scores(sport)
+        games = _lo_scores(sport)
         if games:
             for g in games:
                 teams=g['teams']; away=next((t for t in teams if not t['home']),{})
@@ -991,7 +1050,21 @@ elif page == "📡 Live Odds":
             st.info("No games right now.")
     with col2:
         st.subheader("Best available lines")
-        best = get_best_lines(sport)
+        # derive best lines from the cached events instead of a second API call
+        best = []
+        for event in lo_events:
+            h, a = event.get("home_team",""), event.get("away_team","")
+            bh = ba = None; bhb = bab = ""
+            for book in event.get("bookmakers", []):
+                for m in book.get("markets", []):
+                    if m["key"] != "h2h": continue
+                    for o in m["outcomes"]:
+                        if o["name"] == h and (bh is None or o["price"] > bh):
+                            bh, bhb = o["price"], book["title"]
+                        elif o["name"] == a and (ba is None or o["price"] > ba):
+                            ba, bab = o["price"], book["title"]
+            best.append({"matchup": f"{a} @ {h}", "best_home": bh, "best_home_book": bhb,
+                         "best_away": ba, "best_away_book": bab})
         if best:
             rows=[{'Matchup':b['matchup'],'Best away':f"{b['best_away']:+d}" if b['best_away'] else 'N/A',
                    'Book':b['best_away_book'],'Best home':f"{b['best_home']:+d}" if b['best_home'] else 'N/A',
@@ -1000,7 +1073,7 @@ elif page == "📡 Live Odds":
         else:
             st.info("No odds available right now.")
     st.subheader("All book odds")
-    for event in get_live_odds(sport):
+    for event in lo_events:
         home=event.get('home_team',''); away=event.get('away_team','')
         with st.expander(f"{away} @ {home} — {event.get('commence_time','')[:10]}"):
             rows=[]
@@ -1118,11 +1191,11 @@ elif page == "🧩 Build My Parlay":
     st.markdown('<div style="color:#e2e8f0;font-size:24px;font-weight:700;margin-bottom:2px">Build your own parlay</div>', unsafe_allow_html=True)
     st.markdown('<div style="color:#94a3b8;font-size:14px;margin-bottom:16px">Pick the games and sides you like from today &amp; tomorrow. The lab combines the de-vigged fair odds and tells you the parlay\'s EV — and whether it\'s worth placing.</div>', unsafe_allow_html=True)
 
-    @st.cache_data(ttl=300, show_spinner="Loading today & tomorrow's games…")
+    @st.cache_data(ttl=900, show_spinner="Loading today & tomorrow's games…")
     def _load_events_bp(_d):
         return fetch_events(days=2)
 
-    data = value_bets(_load_events_bp(f"{bp_today}-v2"), min_ev=-1.0, bet_books=BP_BOOKS)
+    data = value_bets(_load_events_bp(f"{bp_today}-v3"), min_ev=-1.0, bet_books=BP_BOOKS)
     pool_all = [b for bets in data.values() for b in bets]
 
     if not pool_all:
@@ -1311,6 +1384,50 @@ elif page == "📋 Bet Tracker":
             pending=[b for b in bets if b['result']=='pending']
             if pending:
                 st.subheader("Settle pending")
+
+                # Auto-settle finished moneyline games via ESPN scores
+                if st.button("🔄 Auto-settle finished games (ESPN)"):
+                    espn_map = {"MLB": "mlb", "World Cup": "worldcup", "EPL": "epl",
+                                "NFL": "nfl", "NBA": "nba", "NHL": "nhl"}
+                    score_cache, n_settled = {}, 0
+                    for b in pending:
+                        if b.get("market", "ML") != "ML":
+                            continue           # only auto-grade straight winners
+                        sp = espn_map.get(b.get("sport", ""))
+                        if not sp:
+                            continue           # tennis etc: settle manually
+                        if sp not in score_cache:
+                            score_cache[sp] = get_espn_scores(sp)
+                        for g in score_cache[sp]:
+                            if not g.get("completed"):
+                                continue
+                            names = [t.get("name", "") for t in g.get("teams", [])]
+                            if len(names) != 2 or not all(n and n in b.get("event", "") for n in names):
+                                continue
+                            winner = next((t["name"] for t in g["teams"] if t.get("winner")), None)
+                            if winner is None:
+                                try:
+                                    s0, s1 = (int(t.get("score") or 0) for t in g["teams"])
+                                except Exception:
+                                    break
+                                if s0 != s1:
+                                    break      # no winner flag but not a draw: skip
+                                result = "win" if b.get("pick") == "Draw" else "loss"
+                            else:
+                                result = "win" if winner == b.get("pick") else "loss"
+                            for bet in bets:
+                                if bet["id"] == b["id"]:
+                                    bet["result"] = result
+                                    bet["payout"] = payout(bet["stake"], bet["odds"]) if result == "win" else 0.0
+                                    n_settled += 1
+                            break
+                    if n_settled:
+                        save_bets(bets)
+                        st.success(f"Auto-settled {n_settled} bet(s) from final scores.")
+                        st.rerun()
+                    else:
+                        st.info("No finished games matched your pending moneyline bets yet.")
+
                 for b in pending:
                     c1,c2,c3=st.columns([3,1,1])
                     c1.write(f"**{b['event']}** — {b['pick']} ({b['odds']:+d}) ${b['stake']:.2f}")
@@ -1346,3 +1463,31 @@ elif page == "📋 Bet Tracker":
                                   font_color='#94a3b8',xaxis=dict(gridcolor='#1e1e3a'),yaxis=dict(gridcolor='#1e1e3a'),
                                   yaxis_title="Cumulative P&L ($)")
                 st.plotly_chart(fig,use_container_width=True)
+
+        # ── Backup & restore ────────────────────────────────────────────────
+        # Streamlit Cloud wipes local files on every reboot/redeploy — download
+        # a backup after logging bets there, and restore it when needed.
+        st.divider()
+        with st.expander("💾 Backup / restore bet history"):
+            st.caption("The cloud copy of this app loses logged bets whenever it reboots. "
+                       "Download a backup after logging bets; upload it to restore. "
+                       "Your local copy keeps bets permanently either way.")
+            bc1, bc2 = st.columns(2)
+            bc1.download_button("⬇️ Download bets backup (JSON)",
+                                data=json.dumps(bets, indent=2),
+                                file_name=f"bets_backup_{datetime.date.today().isoformat()}.json",
+                                mime="application/json",
+                                use_container_width=True)
+            up = bc2.file_uploader("⬆️ Restore from backup", type=["json"], label_visibility="collapsed")
+            if up is not None:
+                try:
+                    restored = json.loads(up.read())
+                    assert isinstance(restored, list)
+                    existing_ids = {b.get("id") for b in bets}
+                    merged = bets + [b for b in restored if b.get("id") not in existing_ids]
+                    if st.button(f"Confirm restore — {len(merged) - len(bets)} new bet(s), {len(merged)} total"):
+                        save_bets(merged)
+                        st.success("Restored.")
+                        st.rerun()
+                except Exception:
+                    st.error("That file doesn't look like a bets backup.")

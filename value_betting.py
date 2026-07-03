@@ -35,6 +35,9 @@ MARKET_LABELS = {"h2h": "ML", "spreads": "Spread", "totals": "Total"}
 
 CLOSING_FILE = "closing_lines.json"
 
+# Fallback set used if sport discovery is unavailable. discover_sports()
+# replaces the contents of SPORTS/SPORT_TAGS/SIDE_MARKETS in place at fetch
+# time, so tournaments rotate automatically as seasons start and end.
 SPORTS = {
     "MLB":           "baseball_mlb",
     "World Cup":     "soccer_fifa_world_cup",
@@ -45,6 +48,69 @@ SPORTS = {
 SPORT_TAGS = {
     "MLB": "⚾", "World Cup": "🌍", "ATP Wimbledon": "🎾", "WTA Wimbledon": "🎾",
 }
+
+MAX_SPORTS = 5          # each sport costs ~3 credits per board refresh
+
+def _tag_for_key(key):
+    if key.startswith("baseball"):
+        return "⚾"
+    if key.startswith("tennis"):
+        return "🎾"
+    if key == "soccer_fifa_world_cup":
+        return "🌍"
+    if key.startswith("soccer"):
+        return "⚽"
+    if key.startswith("americanfootball"):
+        return "🏈"
+    if key.startswith("basketball"):
+        return "🏀"
+    if key.startswith("icehockey"):
+        return "🏒"
+    return "🏟"
+
+
+def discover_sports():
+    """Refresh SPORTS/SPORT_TAGS/SIDE_MARKETS from The Odds API's free
+    active-sports list. Tournaments (tennis events, World Cup) appear only
+    while running; league staples fill the remaining slots. Mutates the
+    module dicts IN PLACE so every existing import sees the update."""
+    from live_data import get_sports_list
+    listing = get_sports_list()
+    if not listing:
+        return SPORTS                      # API down: keep whatever we have
+    active = {s["key"]: s for s in listing if s.get("active")}
+
+    picked = {}
+    # Tournaments first — they only show up while actually running
+    for k, s in sorted(active.items()):
+        title = s.get("title", k)
+        if k.startswith("tennis_atp_"):
+            picked[f"ATP {title.replace('ATP ', '')}"] = k
+        elif k.startswith("tennis_wta_"):
+            picked[f"WTA {title.replace('WTA ', '')}"] = k
+    if "soccer_fifa_world_cup" in active:
+        picked["World Cup"] = "soccer_fifa_world_cup"
+    # League staples by season priority
+    for label, key in [("MLB", "baseball_mlb"), ("NFL", "americanfootball_nfl"),
+                       ("NBA", "basketball_nba"), ("NHL", "icehockey_nhl"),
+                       ("EPL", "soccer_epl")]:
+        if key in active:
+            picked[label] = key
+    picked = dict(list(picked.items())[:MAX_SPORTS])
+
+    SPORTS.clear()
+    SPORTS.update(picked)
+    SPORT_TAGS.clear()
+    SPORT_TAGS.update({lbl: _tag_for_key(k) for lbl, k in picked.items()})
+    SIDE_MARKETS.clear()
+    for lbl, k in picked.items():
+        if k.startswith("soccer"):
+            SIDE_MARKETS[lbl] = dict(_SOCCER_SIDE)
+        elif k.startswith("tennis"):
+            SIDE_MARKETS[lbl] = dict(_TENNIS_SIDE)
+        else:
+            SIDE_MARKETS[lbl] = dict(_US_SIDE)
+    return SPORTS
 
 
 def _date_window(days=2):
@@ -178,7 +244,10 @@ def _bets_for_event(e, label, bet_books, min_books=2):
 
 def fetch_events(days=2, limit=50, markets=MARKETS):
     """Raw today/tomorrow events per sport (this does the API calls).
-    Cache THIS in the app so book/market/slider changes never re-hit the API."""
+    Cache THIS in the app so book/market/slider changes never re-hit the API.
+    Refreshes the in-season sport list first (free API call), so ended
+    tournaments drop out and new seasons appear automatically."""
+    discover_sports()
     window = _date_window(days)
     return {label: [e for e in get_live_odds(key, limit=limit,
                                              books=CONSENSUS_BOOKS, markets=markets)
@@ -221,23 +290,32 @@ _TENNIS_SIDE = {
     "alternate_totals":  "Total games",
 }
 
+_SOCCER_SIDE = {
+    "alternate_totals":           "Goals O/U",
+    "team_totals":                "Team goals O/U",
+    "totals_h1":                  "1st-half goals",
+    "btts":                       "Both teams to score",
+    "draw_no_bet":                "Draw no bet",
+    "h2h_h1":                     "1st-half result",
+    "alternate_spreads":          "Goal handicap",
+    "alternate_totals_corners":   "Corners O/U",
+    "player_goal_scorer_anytime": "Anytime goalscorer",
+    "player_first_goal_scorer":   "First goalscorer",
+    "player_shots_on_target":     "Shots on target",
+    "player_assists":             "Assists O/U",
+}
+
+_US_SIDE = {
+    "alternate_spreads": "Alt spreads",
+    "alternate_totals":  "Alt totals",
+    "team_totals":       "Team totals",
+}
+
 SIDE_MARKETS = {
-    "World Cup": {
-        "alternate_totals":           "Goals O/U",
-        "team_totals":                "Team goals O/U",
-        "totals_h1":                  "1st-half goals",
-        "btts":                       "Both teams to score",
-        "draw_no_bet":                "Draw no bet",
-        "h2h_h1":                     "1st-half result",
-        "alternate_spreads":          "Goal handicap",
-        "alternate_totals_corners":   "Corners O/U",
-        "player_goal_scorer_anytime": "Anytime goalscorer",
-        "player_first_goal_scorer":   "First goalscorer",
-        "player_shots_on_target":     "Shots on target",
-        "player_assists":             "Assists O/U",
-    },
-    "ATP Wimbledon": _TENNIS_SIDE,
-    "WTA Wimbledon": _TENNIS_SIDE,
+    "World Cup":     dict(_SOCCER_SIDE),
+    "ATP Wimbledon": dict(_TENNIS_SIDE),
+    "WTA Wimbledon": dict(_TENNIS_SIDE),
+    "MLB":           dict(_US_SIDE),
 }
 
 
@@ -379,6 +457,49 @@ def snapshot_closing(events_by_sport):
     except Exception:
         pass
     return store
+
+
+def _clv_daemon_loop(check_every=300):
+    """Background CLV guard: if a game kicks off within 30 minutes and nobody
+    has refreshed the odds recently, take one snapshot so the closing line
+    gets captured. Quota-aware: skips entirely when credits run low."""
+    import time, os
+    from live_data import get_quota
+    while True:
+        time.sleep(check_every)
+        try:
+            with open(CLOSING_FILE) as f:
+                store = json.load(f)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            soon = False
+            for entry in store.values():
+                try:
+                    start = datetime.datetime.fromisoformat(
+                        entry["commence"].replace("Z", "+00:00"))
+                    if datetime.timedelta(0) <= start - now <= datetime.timedelta(minutes=30):
+                        soon = True
+                        break
+                except Exception:
+                    continue
+            if not soon:
+                continue
+            # someone (a visitor) already snapshotted recently -> skip
+            if time.time() - os.path.getmtime(CLOSING_FILE) < 25 * 60:
+                continue
+            q = get_quota()
+            if q and q.get("remaining", 0) < 40:
+                continue                   # protect the last credits
+            snapshot_closing(fetch_events(days=2))
+        except Exception:
+            continue
+
+
+def start_clv_daemon():
+    """Start the CLV snapshot guard once per process (daemon thread)."""
+    import threading
+    t = threading.Thread(target=_clv_daemon_loop, daemon=True, name="clv-daemon")
+    t.start()
+    return t
 
 
 def closing_price(sport, match, market, pick):
