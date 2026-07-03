@@ -243,7 +243,6 @@ if page == "🏠 Daily Intelligence":
     if set(market_filter) != {"ML", "Spread", "Total"}:
         data = {s: [b for b in v if b.get("market", "ML") in market_filter]
                 for s, v in data.items()}
-    parlays = build_parlay_suite(data, min_leg_prob=min_leg_prob / 100)
 
     # API quota meter (The Odds API free tier = 500 credits/month)
     _q = get_quota()
@@ -444,47 +443,61 @@ if page == "🏠 Daily Intelligence":
                     unsafe_allow_html=True)
         st.caption("Hit prob assumes independent legs (de-vigged fair odds). Payout = $1 → $X. A +EV parlay needs every leg +EV; the 'Most Likely' parlay favors win-rate over EV.")
 
-    ptab_all, ptab_focus = st.tabs(["🌐 All sports & markets", "🎾🌍 Tennis + World Cup mix · ⚾ MLB wins only"])
+    # Tennis + World Cup spreads/totals don't exist on the bulk feed, so we
+    # harvest them once from the per-event side-bet endpoint (cached 15 min)
+    # and share them across all date tabs.
+    from live_data import get_event_odds
+    from value_betting import side_bets_for_event, CONSENSUS_BOOKS
 
-    with ptab_all:
-        render_parlay_cards(parlays)
+    @st.cache_data(ttl=900, show_spinner="Fetching tennis & World Cup side lines…")
+    def _focus_side(_d, _bb):
+        plan = [("ATP Wimbledon", "alternate_spreads,alternate_totals", 2),
+                ("WTA Wimbledon", "alternate_spreads,alternate_totals", 2),
+                ("World Cup", "alternate_spreads,alternate_totals,btts", 2)]
+        rows = []
+        bb = list(_bb) if _bb else None
+        for sport, mk, n in plan:
+            evs = sorted(raw.get(sport, []), key=lambda e: e.get("commence_time", ""))[:n]
+            for e in evs:
+                evd = get_event_odds(SPORTS[sport], e["id"], mk, books=CONSENSUS_BOOKS)
+                for r in side_bets_for_event(evd, sport, bb):
+                    if r["mode"] != "fair":
+                        continue
+                    cat = "Spread" if "spread" in r["market_key"] else "Total"
+                    r = dict(r)
+                    r["pick"] = f"{r['pick']} ({r['market']})"
+                    r["market"] = cat
+                    rows.append(r)
+        return rows
 
-    with ptab_focus:
-        # MLB restricted to moneyline (wins) only. Tennis + World Cup spreads/
-        # totals don't exist on the bulk feed, so we harvest them from the
-        # per-event side-bet endpoint for the soonest games (cached 15 min).
-        from live_data import get_event_odds
-        from value_betting import side_bets_for_event, CONSENSUS_BOOKS
+    side_rows_all = _focus_side(f"{today}-v2", tuple(BET_BOOKS) if BET_BOOKS else ())
 
-        @st.cache_data(ttl=900, show_spinner="Fetching tennis & World Cup side lines…")
-        def _focus_side(_d, _bb):
-            plan = [("ATP Wimbledon", "alternate_spreads,alternate_totals", 2),
-                    ("WTA Wimbledon", "alternate_spreads,alternate_totals", 2),
-                    ("World Cup", "alternate_spreads,alternate_totals,btts", 2)]
-            rows = []
-            bb = list(_bb) if _bb else None
-            for sport, mk, n in plan:
-                evs = sorted(raw.get(sport, []), key=lambda e: e.get("commence_time", ""))[:n]
-                for e in evs:
-                    evd = get_event_odds(SPORTS[sport], e["id"], mk, books=CONSENSUS_BOOKS)
-                    for r in side_bets_for_event(evd, sport, bb):
-                        if r["mode"] != "fair":
-                            continue
-                        cat = "Spread" if "spread" in r["market_key"] else "Total"
-                        r = dict(r)
-                        r["pick"] = f"{r['pick']} ({r['market']})"
-                        r["market"] = cat
-                        rows.append(r)
-            return rows
+    def _by_date(pool, dstr):
+        """Filter a {sport: [rows]} pool to a single date (None = keep both days)."""
+        if not dstr:
+            return pool
+        return {s: [b for b in v if b.get("date") == dstr] for s, v in pool.items()}
 
-        side_rows = _focus_side(f"{today}-v2", tuple(BET_BOOKS) if BET_BOOKS else ())
-        focus_data = {s: ([b for b in v if b.get("market", "ML") == "ML"] if s == "MLB" else v)
-                      for s, v in data.items()}
-        focus_data["_side"] = side_rows
-        focus_parlays = build_parlay_suite(focus_data, min_leg_prob=min_leg_prob / 100,
-                                           mixed_max_legs=5)
-        st.markdown(f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">⚾ Baseball legs limited to <b>moneyline wins</b> · 🎾🌍 {len(side_rows)} tennis &amp; World Cup spread/total/BTTS side-lines pulled for the soonest games (≈14 API credits, refreshes every 15 min) · Mixed builds up to <b>5 legs</b>.</div>', unsafe_allow_html=True)
-        render_parlay_cards(focus_parlays)
+    date_tabs = st.tabs(["📅 Both days",
+                         f"☀️ Today only ({today.strftime('%b %-d')})",
+                         f"🌙 Tomorrow only ({tomorrow.strftime('%b %-d')})"])
+    for dtab, dstr in zip(date_tabs, [None, str(today), str(tomorrow)]):
+        with dtab:
+            sub_all, sub_focus = st.tabs(["🌐 All sports & markets",
+                                          "🎾🌍 Tennis + World Cup mix · ⚾ MLB wins only"])
+            d_data = _by_date(data, dstr)
+
+            with sub_all:
+                render_parlay_cards(build_parlay_suite(d_data, min_leg_prob=min_leg_prob / 100))
+
+            with sub_focus:
+                f_data = {s: ([b for b in v if b.get("market", "ML") == "ML"] if s == "MLB" else v)
+                          for s, v in d_data.items()}
+                f_side = [r for r in side_rows_all if not dstr or r.get("date") == dstr]
+                f_data["_side"] = f_side
+                st.markdown(f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">⚾ Baseball legs limited to <b>moneyline wins</b> · 🎾🌍 {len(f_side)} tennis &amp; World Cup spread/total/BTTS side-lines (fetched once for the soonest games, ≈14 API credits / 15 min) · Mixed builds up to <b>5 legs</b>.</div>', unsafe_allow_html=True)
+                render_parlay_cards(build_parlay_suite(f_data, min_leg_prob=min_leg_prob / 100,
+                                                       mixed_max_legs=5))
 
     # ── PER-SPORT EV TABLES ─────────────────────────────────────────────────
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
