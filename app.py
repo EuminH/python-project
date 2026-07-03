@@ -512,57 +512,63 @@ if page == "🏠 Daily Intelligence":
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
     st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">📊 Full EV board — every game, both sides</div>', unsafe_allow_html=True)
 
-    tabs = st.tabs([f"{SPORT_TAGS.get(s,'')} {s}" for s in SPORTS])
-    for tab, sport in zip(tabs, SPORTS):
-        with tab:
-            bets = sorted(data.get(sport, []), key=sort_key)
-            if not bets:
-                st.markdown(f'<div style="color:#64748b;font-size:13px;padding:16px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No {sport} games today or tomorrow with a multi-book consensus.</div>', unsafe_allow_html=True)
-                continue
-            head = (
-                '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
-                '<th style="text-align:left;padding:6px 8px 6px 0;font-weight:500">MATCH</th>'
-                '<th style="text-align:left;padding:6px 8px;font-weight:500">PICK</th>'
-                '<th style="text-align:center;padding:6px 8px;font-weight:500">MKT</th>'
-                '<th style="text-align:center;padding:6px 8px;font-weight:500">BOOK</th>'
-                '<th style="text-align:right;padding:6px 8px;font-weight:500">ODDS</th>'
-                '<th style="text-align:right;padding:6px 8px;font-weight:500">FAIR%</th>'
-                '<th style="text-align:right;padding:6px 8px;font-weight:500">#BKS</th>'
-                '<th style="text-align:right;padding:6px 8px;font-weight:500">EV/$100</th>'
-                '<th style="text-align:center;padding:6px 8px;font-weight:500">VERDICT</th>'
-                '<th style="text-align:right;padding:6px 0;font-weight:500">KICKOFF</th></tr>'
-            )
-            body = ""
-            shown = bets[:80]
-            for b in shown:
-                am = f"+{b['american']}" if b['american'] > 0 else str(b['american'])
-                pos = b["ev"] > 0
-                ev_color = "#22c55e" if pos else "#64748b"
-                verdict = ('<span style="background:#22c55e22;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">BET</span>'
-                           if pos else '<span style="color:#475569;font-size:11px">pass</span>')
-                book_color = "#1493ff" if "Draft" in b['book'] else "#1a9c4c"
-                body += (
-                    '<tr style="border-bottom:1px solid #111127">'
-                    f'<td style="color:#64748b;padding:7px 8px 7px 0;font-size:11px">{b["match"][:26]}</td>'
-                    f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{b["pick"][:20]}</td>'
-                    f'<td style="text-align:center;padding:7px 8px"><span style="background:#7c3aed22;color:#a78bfa;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">{b.get("market","ML")}</span></td>'
-                    f'<td style="text-align:center;padding:7px 8px"><span style="color:{book_color};font-size:11px;font-weight:600">{b["book"]}</span></td>'
-                    f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{am}</td>'
-                    f'<td style="color:#94a3b8;text-align:right;padding:7px 8px">{b["fair_prob"]*100:.1f}%</td>'
-                    f'<td style="color:#64748b;text-align:right;padding:7px 8px">{b.get("n_books","")}</td>'
-                    f'<td style="color:{ev_color};text-align:right;padding:7px 8px;font-weight:700">{"+" if pos else ""}${b["ev_per_100"]:.2f}</td>'
-                    f'<td style="text-align:center;padding:7px 8px">{verdict}</td>'
-                    f'<td style="color:#64748b;text-align:right;padding:7px 0;font-size:11px">{b["date"][5:]} {b["time"][:5]}</td></tr>'
+    def render_ev_board(_pool):
+        tabs = st.tabs([f"{SPORT_TAGS.get(s,'')} {s}" for s in SPORTS])
+        for tab, sport in zip(tabs, SPORTS):
+            with tab:
+                bets = sorted(_pool.get(sport, []), key=sort_key)
+                if not bets:
+                    st.markdown(f'<div style="color:#64748b;font-size:13px;padding:16px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No {sport} games today or tomorrow with a multi-book consensus.</div>', unsafe_allow_html=True)
+                    continue
+                head = (
+                    '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                    '<th style="text-align:left;padding:6px 8px 6px 0;font-weight:500">MATCH</th>'
+                    '<th style="text-align:left;padding:6px 8px;font-weight:500">PICK</th>'
+                    '<th style="text-align:center;padding:6px 8px;font-weight:500">MKT</th>'
+                    '<th style="text-align:center;padding:6px 8px;font-weight:500">BOOK</th>'
+                    '<th style="text-align:right;padding:6px 8px;font-weight:500">ODDS</th>'
+                    '<th style="text-align:right;padding:6px 8px;font-weight:500">FAIR%</th>'
+                    '<th style="text-align:right;padding:6px 8px;font-weight:500">#BKS</th>'
+                    '<th style="text-align:right;padding:6px 8px;font-weight:500">EV/$100</th>'
+                    '<th style="text-align:center;padding:6px 8px;font-weight:500">VERDICT</th>'
+                    '<th style="text-align:right;padding:6px 0;font-weight:500">KICKOFF</th></tr>'
                 )
-            n_bet = sum(1 for b in bets if b["ev"] > 0)
-            st.markdown(
-                '<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
-                '<table style="width:100%;border-collapse:collapse;font-size:12px">' + head + body + '</table></div>',
-                unsafe_allow_html=True)
-            extra = f" (showing first {len(shown)})" if len(bets) > len(shown) else ""
-            st.caption(f"{len(bets)} priced outcomes{extra} · {n_bet} rated BET (+EV) · #BKS = books in the consensus for that line.")
+                body = ""
+                shown = bets[:80]
+                for b in shown:
+                    am = f"+{b['american']}" if b['american'] > 0 else str(b['american'])
+                    pos = b["ev"] > 0
+                    ev_color = "#22c55e" if pos else "#64748b"
+                    verdict = ('<span style="background:#22c55e22;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">BET</span>'
+                               if pos else '<span style="color:#475569;font-size:11px">pass</span>')
+                    book_color = "#1493ff" if "Draft" in b['book'] else "#1a9c4c"
+                    body += (
+                        '<tr style="border-bottom:1px solid #111127">'
+                        f'<td style="color:#64748b;padding:7px 8px 7px 0;font-size:11px">{b["match"][:26]}</td>'
+                        f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{b["pick"][:20]}</td>'
+                        f'<td style="text-align:center;padding:7px 8px"><span style="background:#7c3aed22;color:#a78bfa;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">{b.get("market","ML")}</span></td>'
+                        f'<td style="text-align:center;padding:7px 8px"><span style="color:{book_color};font-size:11px;font-weight:600">{b["book"]}</span></td>'
+                        f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{am}</td>'
+                        f'<td style="color:#94a3b8;text-align:right;padding:7px 8px">{b["fair_prob"]*100:.1f}%</td>'
+                        f'<td style="color:#64748b;text-align:right;padding:7px 8px">{b.get("n_books","")}</td>'
+                        f'<td style="color:{ev_color};text-align:right;padding:7px 8px;font-weight:700">{"+" if pos else ""}${b["ev_per_100"]:.2f}</td>'
+                        f'<td style="text-align:center;padding:7px 8px">{verdict}</td>'
+                        f'<td style="color:#64748b;text-align:right;padding:7px 0;font-size:11px">{b["date"][5:]} {b["time"][:5]}</td></tr>'
+                    )
+                n_bet = sum(1 for b in bets if b["ev"] > 0)
+                st.markdown(
+                    '<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
+                    '<table style="width:100%;border-collapse:collapse;font-size:12px">' + head + body + '</table></div>',
+                    unsafe_allow_html=True)
+                extra = f" (showing first {len(shown)})" if len(bets) > len(shown) else ""
+                st.caption(f"{len(bets)} priced outcomes{extra} · {n_bet} rated BET (+EV) · #BKS = books in the consensus for that line.")
 
-
+    ev_date_tabs = st.tabs(["📅 Both days",
+                            f"☀️ Today only ({today.strftime('%b %-d')})",
+                            f"🌙 Tomorrow only ({tomorrow.strftime('%b %-d')})"])
+    for _dtab, _dstr in zip(ev_date_tabs, [None, str(today), str(tomorrow)]):
+        with _dtab:
+            render_ev_board(_by_date(data, _dstr))
 
 
 elif page == "🎯 Side Bets":
