@@ -23,6 +23,17 @@ from dotenv import load_dotenv
 
 load_dotenv()  # local .env fallback (does not override secrets already set above)
 
+# Self-heal stale modules: after a deploy, Streamlit Cloud sometimes hot-reloads
+# app.py but keeps the OLD sibling modules in sys.modules, crashing imports of
+# new symbols (has happened twice). If the loaded engine is older than this
+# app.py expects, force-reload the project modules before importing from them.
+import importlib
+import live_data as _ld_mod
+import value_betting as _vb_mod
+if getattr(_vb_mod, "ENGINE_VERSION", 0) < 3 or not hasattr(_ld_mod, "get_sports_list"):
+    importlib.reload(_ld_mod)
+    importlib.reload(_vb_mod)
+
 from live_data import get_live_odds, get_best_lines, get_espn_scores, get_espn_standings, get_quota
 from ml_betting import load_data, build_features, backtest, vig, kelly_fraction, FEATURE_COLS, predict_upcoming
 from sports_betting import load_bets, save_bets, american_to_decimal, american_implied_prob, payout, profit

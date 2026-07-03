@@ -22,6 +22,11 @@ import statistics
 from live_data import get_live_odds
 from sports_betting import american_to_decimal
 
+# Bumped on engine changes; app.py force-reloads this module when the loaded
+# copy is older (works around Streamlit Cloud keeping stale modules in memory
+# across deploys, which crashed the app with ImportErrors twice).
+ENGINE_VERSION = 3
+
 # Books used to BUILD the fair consensus (more books = sharper truth estimate).
 # <=10 bookmakers costs the same API credits as 2, so this is free accuracy.
 CONSENSUS_BOOKS = ["fanduel", "draftkings", "betmgm", "williamhill_us",
