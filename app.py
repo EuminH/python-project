@@ -230,6 +230,15 @@ if page == "🏠 Daily Intelligence":
     market_filter = st.sidebar.multiselect("Markets", ["ML", "Spread", "Total"],
                                            default=["ML", "Spread", "Total"],
                                            help="ML = moneyline (who wins). Spread = handicap. Total = over/under.")
+    sort_choice = st.sidebar.selectbox("Sort tables by",
+                                       ["Best EV", "Fair % (best → worst)", "Kickoff time"],
+                                       help="Orders the What-to-bet table and the Full EV board. Fair % puts the most likely winners on top.")
+    SORT_KEYS = {
+        "Best EV":              lambda x: -x["ev"],
+        "Fair % (best → worst)": lambda x: -x["fair_prob"],
+        "Kickoff time":         lambda x: (x["date"], x["time"], -x["ev"]),
+    }
+    sort_key = SORT_KEYS[sort_choice]
 
     # Cache the raw API fetch only — switching book/market/sliders re-computes locally
     @st.cache_data(ttl=300, show_spinner="Scanning the books for value…")
@@ -259,9 +268,9 @@ if page == "🏠 Daily Intelligence":
     # Flatten + split
     all_priced = [b for bets in data.values() for b in bets]
     recs = sorted([b for b in all_priced if b["ev"] * 100 >= max(min_ev_pct, 0.0001)],
-                  key=lambda x: x["ev"], reverse=True)
+                  key=sort_key)
     n_games = len({(b["sport"], b["match"]) for b in all_priced})
-    best_ev = recs[0]["ev_per_100"] if recs else 0.0
+    best_ev = max((b["ev_per_100"] for b in recs), default=0.0)
     total_stake = sum(kelly_stake(b["fair_prob"], b["decimal"], bankroll) for b in recs)
 
     # ── Header ──────────────────────────────────────────────────────────────
@@ -506,7 +515,7 @@ if page == "🏠 Daily Intelligence":
     tabs = st.tabs([f"{SPORT_TAGS.get(s,'')} {s}" for s in SPORTS])
     for tab, sport in zip(tabs, SPORTS):
         with tab:
-            bets = sorted(data.get(sport, []), key=lambda x: (x["date"], x["time"], -x["ev"]))
+            bets = sorted(data.get(sport, []), key=sort_key)
             if not bets:
                 st.markdown(f'<div style="color:#64748b;font-size:13px;padding:16px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No {sport} games today or tomorrow with a multi-book consensus.</div>', unsafe_allow_html=True)
                 continue
