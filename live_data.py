@@ -53,6 +53,28 @@ def get_sports_list():
     return _get(f"{ODDS_BASE}/sports/?apiKey={ODDS_API_KEY}") or []
 
 
+def get_tennis_rankings():
+    """{normalized player name: world rank} for ATP + WTA singles, via ESPN
+    (free, no key). Names are casefolded and accent-stripped for matching."""
+    import unicodedata
+
+    def norm(name):
+        return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().casefold().strip()
+
+    out = {}
+    for tour in ("atp", "wta"):
+        data = _get(f"{ESPN_BASE}/tennis/{tour}/rankings")
+        if not data:
+            continue
+        for rl in data.get("rankings", [])[:1]:
+            for r in rl.get("ranks", []):
+                nm = r.get("athlete", {}).get("displayName", "")
+                rk = r.get("current")
+                if nm and isinstance(rk, int):
+                    out[norm(nm)] = rk
+    return out
+
+
 def get_espn_odds(sport="mlb", days=2, limit=50):
     """FREE fallback odds from ESPN's scoreboard (DraftKings lines syndicated
     via ESPN — no key, no quota). Moneyline only; events are shaped like The

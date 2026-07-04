@@ -25,7 +25,7 @@ from sports_betting import american_to_decimal
 # Bumped on engine changes; app.py force-reloads this module when the loaded
 # copy is older (works around Streamlit Cloud keeping stale modules in memory
 # across deploys, which crashed the app with ImportErrors twice).
-ENGINE_VERSION = 4
+ENGINE_VERSION = 5
 
 # The Odds API sport key -> ESPN scoreboard key, for the free fallback feed
 # used when quota is exhausted. ESPN carries DraftKings moneylines for these.
@@ -209,6 +209,35 @@ def _pick_name(mkey, name, point):
     return f"{name} {point:g}"            # totals: "Over 8.5"
 
 
+# ── Tennis world rankings (ESPN, cached 12h in-process) ────────────────────
+
+_TENNIS_RANKS = {"ts": 0.0, "map": {}}
+
+def _norm_name(name):
+    import unicodedata
+    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().casefold().strip()
+
+
+def _tennis_rank(name):
+    """World ranking for a player name, or None if unranked/unknown."""
+    import time
+    if time.time() - _TENNIS_RANKS["ts"] > 43200 or not _TENNIS_RANKS["map"]:
+        from live_data import get_tennis_rankings
+        m = get_tennis_rankings()
+        if m:
+            _TENNIS_RANKS["map"] = m
+            _TENNIS_RANKS["ts"] = time.time()
+    return _TENNIS_RANKS["map"].get(_norm_name(name))
+
+
+def _rank_decorated(label, mkey, name, pick):
+    """For tennis moneylines, append the player's world ranking: 'Sinner (#1)'."""
+    if mkey != "h2h" or not label.startswith(("ATP", "WTA")):
+        return pick
+    rk = _tennis_rank(name)
+    return f"{pick} (#{rk})" if rk else pick
+
+
 def _bets_for_event(e, label, bet_books, min_books=2):
     """Bet rows for one event across all markets. Fair prob = consensus of all
     books; the price/EV use only `bet_books` (where the user will bet).
@@ -248,7 +277,7 @@ def _bets_for_event(e, label, bet_books, min_books=2):
                 "date": ct[:10],
                 "time": ct[11:16] + " UTC" if len(ct) >= 16 else "",
                 "market": MARKET_LABELS[mkey],
-                "pick": _pick_name(mkey, name, point),
+                "pick": _rank_decorated(label, mkey, name, _pick_name(mkey, name, point)),
                 "fair_prob": round(p, 4),
                 "decimal": round(dec, 3),
                 "american": american,

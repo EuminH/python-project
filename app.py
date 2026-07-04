@@ -30,7 +30,7 @@ load_dotenv()  # local .env fallback (does not override secrets already set abov
 import importlib
 import live_data as _ld_mod
 import value_betting as _vb_mod
-if getattr(_vb_mod, "ENGINE_VERSION", 0) < 4 or not hasattr(_ld_mod, "get_espn_odds"):
+if getattr(_vb_mod, "ENGINE_VERSION", 0) < 5 or not hasattr(_ld_mod, "get_tennis_rankings"):
     importlib.reload(_ld_mod)
     importlib.reload(_vb_mod)
 
