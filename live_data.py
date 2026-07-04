@@ -53,6 +53,64 @@ def get_sports_list():
     return _get(f"{ODDS_BASE}/sports/?apiKey={ODDS_API_KEY}") or []
 
 
+def get_espn_odds(sport="mlb", days=2, limit=50):
+    """FREE fallback odds from ESPN's scoreboard (DraftKings lines syndicated
+    via ESPN — no key, no quota). Moneyline only; events are shaped like The
+    Odds API's so the value engine can consume them unchanged."""
+    s, l = ESPN_SPORTS.get(sport, (None, None))
+    if not s:
+        return []
+    events, today = [], datetime.date.today()
+    for i in range(days):
+        day = (today + datetime.timedelta(days=i)).strftime("%Y%m%d")
+        data = _get(f"{ESPN_BASE}/{s}/{l}/scoreboard?dates={day}")
+        if not data:
+            continue
+        for ev in data.get("events", []):
+            comp = ev.get("competitions", [{}])[0]
+            if comp.get("status", {}).get("type", {}).get("completed"):
+                continue
+            oddsl = [o for o in comp.get("odds", []) if o]
+            if not oddsl:
+                continue
+            o = oddsl[0]
+            comps = comp.get("competitors", [])
+            home = next((c for c in comps if c.get("homeAway") == "home"), {})
+            away = next((c for c in comps if c.get("homeAway") == "away"), {})
+            hname = home.get("team", {}).get("displayName", "")
+            aname = away.get("team", {}).get("displayName", "")
+            ml = o.get("moneyline") or {}
+
+            def _price(side):
+                try:
+                    return int(str((ml.get(side) or {}).get("close", {}).get("odds", "")))
+                except Exception:
+                    return None
+
+            hp, ap = _price("home"), _price("away")
+            if hp is None or ap is None or not (hname and aname):
+                continue
+            outcomes = [{"name": hname, "price": hp}, {"name": aname, "price": ap}]
+            dp = _price("draw")
+            if dp is not None:
+                outcomes.append({"name": "Draw", "price": dp})
+            book = (o.get("provider") or {}).get("displayName", "ESPN BET")
+            events.append({
+                "id": str(ev.get("id", "")),
+                "home_team": hname, "away_team": aname,
+                "commence_time": ev.get("date", ""),
+                "_espn_fallback": True,
+                "bookmakers": [{
+                    "key": "draftkings" if "DraftKings" in book else "espnbet",
+                    "title": f"{book} · ESPN",
+                    "markets": [{"key": "h2h", "outcomes": outcomes}],
+                }],
+            })
+            if len(events) >= limit:
+                return events
+    return events
+
+
 # ── The Odds API ───────────────────────────────────────────────────────────
 
 SPORT_KEYS = {

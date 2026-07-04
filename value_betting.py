@@ -25,12 +25,24 @@ from sports_betting import american_to_decimal
 # Bumped on engine changes; app.py force-reloads this module when the loaded
 # copy is older (works around Streamlit Cloud keeping stale modules in memory
 # across deploys, which crashed the app with ImportErrors twice).
-ENGINE_VERSION = 3
+ENGINE_VERSION = 4
+
+# The Odds API sport key -> ESPN scoreboard key, for the free fallback feed
+# used when quota is exhausted. ESPN carries DraftKings moneylines for these.
+ESPN_FALLBACK = {
+    "baseball_mlb":          "mlb",
+    "americanfootball_nfl":  "nfl",
+    "basketball_nba":        "nba",
+    "icehockey_nhl":         "nhl",
+    "soccer_epl":            "epl",
+    "soccer_fifa_world_cup": "worldcup",
+}
 
 # Books used to BUILD the fair consensus (more books = sharper truth estimate).
 # <=10 bookmakers costs the same API credits as 2, so this is free accuracy.
 CONSENSUS_BOOKS = ["fanduel", "draftkings", "betmgm", "williamhill_us",
-                   "betrivers", "bovada", "pointsbetus", "unibet_us"]
+                   "betrivers", "bovada", "pointsbetus", "unibet_us",
+                   "espnbet"]   # espnbet only ever appears via the ESPN fallback
 
 # Books the user can actually bet at (default: both).
 VALUE_BOOKS = ["fanduel", "draftkings"]
@@ -202,6 +214,10 @@ def _bets_for_event(e, label, bet_books, min_books=2):
     books; the price/EV use only `bet_books` (where the user will bet).
     min_books=1 accepts single-book de-vigs (needed for tennis/soccer
     spreads+totals where books hang different lines); n_books flags them."""
+    if e.get("_espn_fallback"):
+        # single syndicated book: price at that book, allow 1-book de-vig
+        min_books = 1
+        bet_books = [bm["key"] for bm in e.get("bookmakers", [])] or bet_books
     lines = _book_lines(e)
     ct = e.get("commence_time", "")
     home, away = e.get("home_team", ""), e.get("away_team", "")
@@ -254,10 +270,18 @@ def fetch_events(days=2, limit=50, markets=MARKETS):
     tournaments drop out and new seasons appear automatically."""
     discover_sports()
     window = _date_window(days)
-    return {label: [e for e in get_live_odds(key, limit=limit,
-                                             books=CONSENSUS_BOOKS, markets=markets)
-                    if e.get("commence_time", "")[:10] in window]
-            for label, key in SPORTS.items()}
+    out = {}
+    for label, key in SPORTS.items():
+        evs = [e for e in get_live_odds(key, limit=limit,
+                                        books=CONSENSUS_BOOKS, markets=markets)
+               if e.get("commence_time", "")[:10] in window]
+        if not evs and key in ESPN_FALLBACK:
+            # quota exhausted (or feed empty): free ESPN/DraftKings moneylines
+            from live_data import get_espn_odds
+            evs = [e for e in get_espn_odds(ESPN_FALLBACK[key], days=days)
+                   if e.get("commence_time", "")[:10] in window]
+        out[label] = evs
+    return out
 
 
 def value_bets(events_by_sport, min_ev=-1.0, bet_books=None, min_books=2):

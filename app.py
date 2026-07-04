@@ -30,7 +30,7 @@ load_dotenv()  # local .env fallback (does not override secrets already set abov
 import importlib
 import live_data as _ld_mod
 import value_betting as _vb_mod
-if getattr(_vb_mod, "ENGINE_VERSION", 0) < 3 or not hasattr(_ld_mod, "get_sports_list"):
+if getattr(_vb_mod, "ENGINE_VERSION", 0) < 4 or not hasattr(_ld_mod, "get_espn_odds"):
     importlib.reload(_ld_mod)
     importlib.reload(_vb_mod)
 
@@ -286,8 +286,19 @@ if page == "🏠 Daily Intelligence":
         snapshot_closing(ev)   # keep latest pre-kickoff prices for CLV grading
         return ev
 
-    raw = load_events(f"{today}-v3")
+    raw = load_events(f"{today}-v4")
     data = value_bets(raw, min_ev=-1.0, bet_books=BET_BOOKS)
+
+    # Free-feed banner: sports served by the ESPN/DraftKings fallback
+    _fb = sorted(s for s, v in raw.items() if v and any(e.get("_espn_fallback") for e in v))
+    if _fb:
+        st.markdown(
+            '<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:12px 16px;margin-bottom:12px">'
+            '<div style="color:#fbbf24;font-size:13px;line-height:1.6">🟡 <b>Odds API credits exhausted — running on the free ESPN feed</b> for: '
+            f'{", ".join(_fb)}. Moneylines only, single book (DraftKings via ESPN). Fair % is that one book\'s de-vigged line, '
+            'so EV sits near zero and <b>edge-finding is paused</b> — probabilities, parlays-by-probability, logging, and auto-settle all still work. '
+            'Full multi-book value hunting resumes when your monthly credits reset.</div></div>',
+            unsafe_allow_html=True)
     if set(market_filter) != {"ML", "Spread", "Total"}:
         data = {s: [b for b in v if b.get("market", "ML") in market_filter]
                 for s, v in data.items()}
@@ -519,7 +530,7 @@ if page == "🏠 Daily Intelligence":
                     rows.append(r)
         return rows
 
-    side_rows_all = _focus_side(f"{today}-v3", tuple(BET_BOOKS) if BET_BOOKS else ())
+    side_rows_all = _focus_side(f"{today}-v4", tuple(BET_BOOKS) if BET_BOOKS else ())
 
     def _by_date(pool, dstr):
         """Filter a {sport: [rows]} pool to a single date (None = keep both days)."""
@@ -645,7 +656,7 @@ elif page == "🎯 Side Bets":
     def _sb_events(_d):
         return fetch_events(days=2)
 
-    raw = _sb_events(f"{sb_today}-v3")
+    raw = _sb_events(f"{sb_today}-v4")
     sb_sport = st.selectbox("Sport", list(SIDE_MARKETS.keys()),
                             format_func=lambda s: f"{SPORT_TAGS.get(s,'')} {s}")
     events = raw.get(sb_sport, [])
@@ -1206,7 +1217,7 @@ elif page == "🧩 Build My Parlay":
     def _load_events_bp(_d):
         return fetch_events(days=2)
 
-    data = value_bets(_load_events_bp(f"{bp_today}-v3"), min_ev=-1.0, bet_books=BP_BOOKS)
+    data = value_bets(_load_events_bp(f"{bp_today}-v4"), min_ev=-1.0, bet_books=BP_BOOKS)
     pool_all = [b for bets in data.values() for b in bets]
 
     if not pool_all:
