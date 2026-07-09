@@ -30,7 +30,7 @@ load_dotenv()  # local .env fallback (does not override secrets already set abov
 import importlib
 import live_data as _ld_mod
 import value_betting as _vb_mod
-if getattr(_vb_mod, "ENGINE_VERSION", 0) < 5 or not hasattr(_ld_mod, "get_tennis_rankings"):
+if getattr(_vb_mod, "ENGINE_VERSION", 0) < 7 or not hasattr(_ld_mod, "get_tennis_rankings"):
     importlib.reload(_ld_mod)
     importlib.reload(_vb_mod)
 
@@ -1409,8 +1409,8 @@ elif page == "📋 Bet Tracker":
 
                 # Auto-settle finished moneyline games via ESPN scores
                 if st.button("🔄 Auto-settle finished games (ESPN)"):
-                    espn_map = {"MLB": "mlb", "World Cup": "worldcup", "EPL": "epl",
-                                "NFL": "nfl", "NBA": "nba", "NHL": "nhl"}
+                    espn_map = {"MLB": "mlb", "WNBA": "wnba", "World Cup": "worldcup",
+                                "EPL": "epl", "NFL": "nfl", "NBA": "nba", "NHL": "nhl"}
                     score_cache, n_settled = {}, 0
                     for b in pending:
                         if b.get("market", "ML") != "ML":

@@ -25,12 +25,13 @@ from sports_betting import american_to_decimal
 # Bumped on engine changes; app.py force-reloads this module when the loaded
 # copy is older (works around Streamlit Cloud keeping stale modules in memory
 # across deploys, which crashed the app with ImportErrors twice).
-ENGINE_VERSION = 5
+ENGINE_VERSION = 7
 
 # The Odds API sport key -> ESPN scoreboard key, for the free fallback feed
 # used when quota is exhausted. ESPN carries DraftKings moneylines for these.
 ESPN_FALLBACK = {
     "baseball_mlb":          "mlb",
+    "basketball_wnba":       "wnba",
     "americanfootball_nfl":  "nfl",
     "basketball_nba":        "nba",
     "icehockey_nhl":         "nhl",
@@ -108,9 +109,9 @@ def discover_sports():
     if "soccer_fifa_world_cup" in active:
         picked["World Cup"] = "soccer_fifa_world_cup"
     # League staples by season priority
-    for label, key in [("MLB", "baseball_mlb"), ("NFL", "americanfootball_nfl"),
-                       ("NBA", "basketball_nba"), ("NHL", "icehockey_nhl"),
-                       ("EPL", "soccer_epl")]:
+    for label, key in [("MLB", "baseball_mlb"), ("WNBA", "basketball_wnba"),
+                       ("NFL", "americanfootball_nfl"), ("NBA", "basketball_nba"),
+                       ("NHL", "icehockey_nhl"), ("EPL", "soccer_epl")]:
         if key in active:
             picked[label] = key
     picked = dict(list(picked.items())[:MAX_SPORTS])
@@ -518,22 +519,27 @@ def snapshot_closing(events_by_sport):
 
 
 def _clv_daemon_loop(check_every=300):
-    """Background CLV guard: if a game kicks off within 30 minutes and nobody
-    has refreshed the odds recently, take one snapshot so the closing line
-    gets captured. Quota-aware: skips entirely when credits run low."""
+    """Background CLV guard. Only fetches when a game the user has actually
+    LOGGED A BET ON starts within 30 minutes — CLV grading only needs closing
+    lines for logged bets. (The old version guarded every upcoming game and
+    quietly burned ~500 credits in days when kickoffs ran all day.)"""
     import time, os
     from live_data import get_quota
     while True:
         time.sleep(check_every)
         try:
-            with open(CLOSING_FILE) as f:
-                store = json.load(f)
+            try:
+                with open("bets.json") as f:
+                    pending = [b for b in json.load(f)
+                               if b.get("result") == "pending" and b.get("commence")]
+            except Exception:
+                continue                   # no logged bets -> never fetch
             now = datetime.datetime.now(datetime.timezone.utc)
             soon = False
-            for entry in store.values():
+            for b in pending:
                 try:
                     start = datetime.datetime.fromisoformat(
-                        entry["commence"].replace("Z", "+00:00"))
+                        b["commence"].replace("Z", "+00:00"))
                     if datetime.timedelta(0) <= start - now <= datetime.timedelta(minutes=30):
                         soon = True
                         break
@@ -542,7 +548,7 @@ def _clv_daemon_loop(check_every=300):
             if not soon:
                 continue
             # someone (a visitor) already snapshotted recently -> skip
-            if time.time() - os.path.getmtime(CLOSING_FILE) < 25 * 60:
+            if os.path.exists(CLOSING_FILE) and time.time() - os.path.getmtime(CLOSING_FILE) < 25 * 60:
                 continue
             q = get_quota()
             if q and q.get("remaining", 0) < 40:

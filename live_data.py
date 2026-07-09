@@ -236,6 +236,7 @@ def get_best_lines(sport="nba"):
 
 ESPN_SPORTS = {
     "nba":  ("basketball", "nba"),
+    "wnba": ("basketball", "wnba"),
     "mlb":  ("baseball", "mlb"),
     "nfl":  ("football", "nfl"),
     "nhl":  ("hockey", "nhl"),
