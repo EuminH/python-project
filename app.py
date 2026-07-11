@@ -1588,17 +1588,33 @@ elif page == "🎲 PrizePicks":
                     rows += [r for r in _pp_side(evd, label) if r["mode"] == "fair"]
                 return rows
             prop_rows = _pp_props(f"{pp_today}-props")
+
+            # Prominence filter: PrizePicks curates a small board of featured
+            # players, while sportsbooks price deep bench too. Keep players
+            # priced by 2+ books or across 2+ stat types — a decent proxy for
+            # "actually on PrizePicks" since we can't read their board.
+            from collections import defaultdict
+            _pl_markets = defaultdict(set)
+            _pl_books = defaultdict(int)
+            def _pp_player(b):
+                return b["pick"].split(" Over ")[0].split(" Under ")[0]
+            for b in prop_rows:
+                _pl_markets[_pp_player(b)].add(b["market"])
+                _pl_books[_pp_player(b)] = max(_pl_books[_pp_player(b)], b["n_books"])
+
             seen_pl = set()
             for b in sorted(prop_rows, key=lambda x: -x["fair_prob"]):
-                player = b["pick"].split(" Over ")[0].split(" Under ")[0]
+                player = _pp_player(b)
                 if (b["match"], player) in seen_pl or not 0.55 <= b["fair_prob"] <= 0.75:
                     continue
+                if _pl_books[player] < 2 and len(_pl_markets[player]) < 2:
+                    continue               # fringe player: likely not on PrizePicks
                 seen_pl.add((b["match"], player))
                 pool.append(b)
             if not prop_rows:
                 st.markdown('<div style="color:#94a3b8;font-size:13px;padding:12px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No props came back — books post player props closer to game time, and fetches fail without API credits. Try again later.</div>', unsafe_allow_html=True)
             elif len(pool) < 3:
-                st.markdown('<div style="color:#64748b;font-size:13px;padding:14px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">Props came back, but fewer than 3 players sit in the 55–75% band right now — not enough for an honest slate.</div>', unsafe_allow_html=True)
+                st.markdown('<div style="color:#64748b;font-size:13px;padding:14px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">Props came back, but fewer than 3 featured players sit in the 55–75% band right now — not enough for an honest slate.</div>', unsafe_allow_html=True)
 
     if len(pool) >= 3:
         # Partition the pool so no leg repeats across slates: the 3-pick takes
@@ -1636,7 +1652,20 @@ elif page == "🎲 PrizePicks":
                     for i, l in enumerate(legs):
                         st.session_state[f"pp_l{i}"] = f"{l['pick'][:34]} · {l['match'][:22]}"
                         st.session_state[f"pp_p{i}"] = min(97, max(30, int(round(l["fair_prob"] * 100))))
-        st.caption("Real sportsbook player-prop lines de-vigged to Fair % — apples-to-apples with PrizePicks. Every slate uses a different set of players (no repeated legs across cards; the 3-pick gets the strongest probabilities). Check that PrizePicks' line matches the one shown — a friendlier line makes your true hit% even better. Building all three slates needs 12 qualifying players, so fewer cards may show on thin days.")
+        # Alternates: the next-best qualifying players, for swapping in when a
+        # suggested pick turns out not to exist on PrizePicks' board.
+        _alts = pool[_idx:_idx + 6]
+        if _alts:
+            alts_html = " · ".join(
+                f'<span style="color:#e2e8f0">{a["pick"][:26]}</span> '
+                f'<span style="color:#a78bfa;font-weight:600">{a["fair_prob"]*100:.0f}%</span> '
+                f'<span style="color:#475569">({a["market"]})</span>'
+                for a in _alts)
+            st.markdown(
+                '<div style="background:#111127;border:1px solid #1e1e3a;border-radius:10px;padding:10px 14px;margin-top:10px;font-size:12px">'
+                f'<span style="color:#64748b;font-weight:700">🔁 ALTERNATES</span> <span style="color:#64748b">— swap in if a pick isn\'t on PrizePicks:</span><br>{alts_html}</div>',
+                unsafe_allow_html=True)
+        st.caption("⚠️ PrizePicks curates a much smaller board than sportsbooks — VERIFY each pick exists in their app before building the entry (their bot-wall blocks us from checking for you). Slates favor featured players (priced by 2+ books or in 2+ stat types), every card uses different players, and the 3-pick gets the strongest probabilities. If a pick is missing, swap an alternate in via the calculator below.")
 
 
     # ── Build an entry ──────────────────────────────────────────────────────
