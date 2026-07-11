@@ -15,6 +15,11 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 ODDS_BASE = "https://api.the-odds-api.com/v4"
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports"
 
+# Optional premium source (paid): https://developer.oddsjam.com — endpoint
+# contract taken from the oddsjam-api wrapper. Dormant without a key.
+ODDSJAM_API_KEY = os.getenv("ODDSJAM_API_KEY", "")
+ODDSJAM_BASE = "https://api-external.oddsjam.com/api"
+
 QUOTA_FILE = "quota.json"
 
 
@@ -51,6 +56,111 @@ def get_sports_list():
     """All sports The Odds API knows about, with their active flags.
     This endpoint is FREE — it does not consume quota credits."""
     return _get(f"{ODDS_BASE}/sports/?apiKey={ODDS_API_KEY}") or []
+
+
+# ── OddsJam (optional premium source) ──────────────────────────────────────
+
+ODDSJAM_LEAGUES = {
+    "baseball_mlb":          ("baseball", "mlb"),
+    "basketball_wnba":       ("basketball", "wnba"),
+    "americanfootball_nfl":  ("football", "nfl"),
+    "basketball_nba":        ("basketball", "nba"),
+    "icehockey_nhl":         ("hockey", "nhl"),
+    "soccer_epl":            ("soccer", "epl"),
+    "tennis_atp":            ("tennis", "atp"),
+    "tennis_wta":            ("tennis", "wta"),
+}
+
+_OJ_BOOK_KEYS = {
+    "draftkings": "draftkings", "fanduel": "fanduel", "betmgm": "betmgm",
+    "caesars": "williamhill_us", "williamhill": "williamhill_us",
+    "betrivers": "betrivers", "bovada": "bovada", "pointsbet": "pointsbetus",
+    "unibet": "unibet_us", "espnbet": "espnbet",
+}
+
+
+def _oj_market(market_name):
+    m = (market_name or "").lower()
+    if m == "moneyline":
+        return "h2h"
+    if "spread" in m or "run line" in m or "puck line" in m or "game handicap" in m:
+        return "spreads"
+    if m.startswith("total"):
+        return "totals"
+    return None
+
+
+def _oj_outcome(mkey, name):
+    """OddsJam outcome name -> (name, point). 'Over 32.5' / 'Lions -3.5' / team."""
+    if mkey == "h2h":
+        return name, None
+    parts = name.rsplit(" ", 1)
+    if len(parts) == 2:
+        try:
+            return parts[0], float(parts[1].replace("+", ""))
+        except ValueError:
+            pass
+    return name, None
+
+
+def oddsjam_to_events(rows, limit=50):
+    """Convert OddsJam's flat odds rows into The-Odds-API-shaped events."""
+    games = {}
+    for r in rows:
+        g = r.get("game") or {}
+        gid = g.get("id")
+        mkey = _oj_market(r.get("market_name"))
+        price = r.get("price")
+        book = (r.get("sports_book") or {}).get("name", "")
+        if gid is None or not mkey or not isinstance(price, (int, float)) or not book:
+            continue
+        if r.get("is_live"):
+            continue
+        try:
+            start = datetime.datetime.fromisoformat(str(g.get("start_date", "")))
+            commence = start.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            continue
+        ev = games.setdefault(gid, {
+            "id": str(gid),
+            "home_team": g.get("home_team", ""), "away_team": g.get("away_team", ""),
+            "commence_time": commence, "_any_books": True, "_books": {},
+        })
+        bkey = _OJ_BOOK_KEYS.get(book.lower().replace(" ", ""), book.lower().replace(" ", "_"))
+        name, point = _oj_outcome(mkey, r.get("name", ""))
+        mkts = ev["_books"].setdefault(bkey, {"title": book, "markets": {}})
+        out = {"name": name, "price": int(price)}
+        if point is not None:
+            out["point"] = point
+        mkts["markets"].setdefault(mkey, []).append(out)
+
+    events = []
+    for ev in list(games.values())[:limit]:
+        books = ev.pop("_books")
+        ev["bookmakers"] = [{"key": bk, "title": d["title"],
+                             "markets": [{"key": mk, "outcomes": outs}
+                                         for mk, outs in d["markets"].items()]}
+                            for bk, d in books.items()]
+        events.append(ev)
+    return events
+
+
+def get_oddsjam_odds(sport_key, limit=50):
+    """Odds from OddsJam for one of our sport keys. Returns [] without a key,
+    so this source is completely dormant unless ODDSJAM_API_KEY is set."""
+    if not ODDSJAM_API_KEY:
+        return []
+    lookup = sport_key if sport_key in ODDSJAM_LEAGUES else (
+        "tennis_atp" if sport_key.startswith("tennis_atp") else
+        "tennis_wta" if sport_key.startswith("tennis_wta") else None)
+    m = ODDSJAM_LEAGUES.get(lookup) if lookup else None
+    if not m:
+        return []
+    sport, league = m
+    rows = _get(f"{ODDSJAM_BASE}/v1/odds?key={ODDSJAM_API_KEY}&sport={sport}&league={league}")
+    if not isinstance(rows, list):
+        return []
+    return oddsjam_to_events(rows, limit=limit)
 
 
 def get_tennis_rankings():

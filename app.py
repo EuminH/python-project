@@ -5,8 +5,9 @@ import streamlit as st
 # (live_data / value_betting read ODDS_API_KEY at import time). Locally this is a
 # no-op and the .env file is used instead.
 try:
-    if "ODDS_API_KEY" in st.secrets:
-        os.environ["ODDS_API_KEY"] = str(st.secrets["ODDS_API_KEY"])
+    for _k in ("ODDS_API_KEY", "ODDSJAM_API_KEY"):
+        if _k in st.secrets:
+            os.environ[_k] = str(st.secrets[_k])
 except Exception:
     pass
 
@@ -30,7 +31,7 @@ load_dotenv()  # local .env fallback (does not override secrets already set abov
 import importlib
 import live_data as _ld_mod
 import value_betting as _vb_mod
-if getattr(_vb_mod, "ENGINE_VERSION", 0) < 7 or not hasattr(_ld_mod, "get_tennis_rankings"):
+if getattr(_vb_mod, "ENGINE_VERSION", 0) < 8 or not hasattr(_ld_mod, "get_tennis_rankings"):
     importlib.reload(_ld_mod)
     importlib.reload(_vb_mod)
 

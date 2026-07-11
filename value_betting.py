@@ -25,7 +25,7 @@ from sports_betting import american_to_decimal
 # Bumped on engine changes; app.py force-reloads this module when the loaded
 # copy is older (works around Streamlit Cloud keeping stale modules in memory
 # across deploys, which crashed the app with ImportErrors twice).
-ENGINE_VERSION = 7
+ENGINE_VERSION = 8
 
 # The Odds API sport key -> ESPN scoreboard key, for the free fallback feed
 # used when quota is exhausted. ESPN carries DraftKings moneylines for these.
@@ -163,8 +163,9 @@ def _book_lines(event, books=CONSENSUS_BOOKS):
     """{(market_key, line_group): {book_key: {(name, point): (dec, american, title)}}}
     line_group identifies the exact line (e.g. spread -1.5 vs -2.0 are separate)."""
     out = {}
+    any_books = event.get("_any_books", False)   # OddsJam carries extra books
     for bm in event.get("bookmakers", []):
-        if bm["key"] not in books:
+        if not any_books and bm["key"] not in books:
             continue
         for m in bm.get("markets", []):
             mkey = m["key"]
@@ -302,12 +303,15 @@ def fetch_events(days=2, limit=50, markets=MARKETS):
     window = _date_window(days)
     out = {}
     for label, key in SPORTS.items():
-        evs = [e for e in get_live_odds(key, limit=limit,
-                                        books=CONSENSUS_BOOKS, markets=markets)
+        # source chain: OddsJam (if key set) -> The Odds API -> free ESPN feed
+        from live_data import get_oddsjam_odds, get_espn_odds
+        evs = [e for e in get_oddsjam_odds(key, limit=limit)
                if e.get("commence_time", "")[:10] in window]
+        if not evs:
+            evs = [e for e in get_live_odds(key, limit=limit,
+                                            books=CONSENSUS_BOOKS, markets=markets)
+                   if e.get("commence_time", "")[:10] in window]
         if not evs and key in ESPN_FALLBACK:
-            # quota exhausted (or feed empty): free ESPN/DraftKings moneylines
-            from live_data import get_espn_odds
             evs = [e for e in get_espn_odds(ESPN_FALLBACK[key], days=days)
                    if e.get("commence_time", "")[:10] in window]
         out[label] = evs
