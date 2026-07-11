@@ -1487,20 +1487,16 @@ elif page == "🎲 PrizePicks":
                 + rows_html + '</table></div>', unsafe_allow_html=True)
     st.caption("A coin-flip pick hits 50%. Every entry type needs 54–58% per pick to break even — that gap is PrizePicks' vig. Standard published multipliers; verify current ones in the app.")
 
-    # ── Suggested Flex slates ────────────────────────────────────────────────
+    # ── Suggested Flex slates (player props only — that's all PrizePicks is) ─
     st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">🎯 Suggested Flex slates</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">🎯 Suggested Flex slates — from real player props</div>', unsafe_allow_html=True)
 
-    from value_betting import (value_bets as _pp_vb, side_bets_for_event as _pp_side,
-                               SPORT_TAGS as _PP_TAGS, SPORTS as _PP_SPORTS,
-                               SIDE_MARKETS as _PP_SM, CONSENSUS_BOOKS as _PP_CB)
+    from value_betting import (side_bets_for_event as _pp_side, SPORT_TAGS as _PP_TAGS,
+                               SPORTS as _PP_SPORTS, SIDE_MARKETS as _PP_SM,
+                               CONSENSUS_BOOKS as _PP_CB)
     from live_data import get_event_odds as _pp_evodds
 
     _pp_raw = shared_load_events(f"{pp_today}-v4")
-
-    pp_src = st.radio("Build slates from",
-                      ["Player props (PrizePicks-style)", "Game markets (ML / spread / total)"],
-                      horizontal=True, key="pp_src")
 
     def _pp_prop_plan():
         """(label, event, market_keys) for prop-capable games with real Odds API ids."""
@@ -1517,45 +1513,35 @@ elif page == "🎲 PrizePicks":
         return plan
 
     pool = []
-    if pp_src.startswith("Player props"):
-        plan = _pp_prop_plan()
-        est = sum(len(mk) for _, _, mk in plan)
-        if not plan:
-            st.markdown('<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:10px 14px;margin-bottom:10px;color:#fbbf24;font-size:12px">ℹ️ Player props need live Odds API credits (the free ESPN feed carries no props). Until credits reset, use the game-market slates below — or fetch props once credits are back.</div>', unsafe_allow_html=True)
-        else:
-            if st.button(f"⚡ Fetch player props for slates (≈{est} API credits, cached 30 min)"):
-                st.session_state["pp_props_go"] = True
-            if st.session_state.get("pp_props_go"):
-                @st.cache_data(ttl=1800, show_spinner="Fetching player props…")
-                def _pp_props(_d):
-                    rows = []
-                    for label, e, mk in _pp_prop_plan():
-                        evd = _pp_evodds(_PP_SPORTS[label], e["id"], ",".join(mk), books=_PP_CB)
-                        rows += [r for r in _pp_side(evd, label) if r["mode"] == "fair"]
-                    return rows
-                prop_rows = _pp_props(f"{pp_today}-props")
-                seen_pl = set()
-                for b in sorted(prop_rows, key=lambda x: -x["fair_prob"]):
-                    player = b["pick"].split(" Over ")[0].split(" Under ")[0]
-                    if (b["match"], player) in seen_pl or not 0.55 <= b["fair_prob"] <= 0.75:
-                        continue
-                    seen_pl.add((b["match"], player))
-                    pool.append(b)
-                if not prop_rows:
-                    st.markdown('<div style="color:#94a3b8;font-size:13px;padding:12px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No props came back (books post them closer to game time, and fetches fail without API credits). Try again later or switch to game markets.</div>', unsafe_allow_html=True)
+    plan = _pp_prop_plan()
+    est = sum(len(mk) for _, _, mk in plan)
+    if not plan:
+        st.markdown('<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:10px 14px;margin-bottom:10px;color:#fbbf24;font-size:12px">ℹ️ PrizePicks is player props only, and props need live Odds API credits (the free ESPN feed doesn\'t carry them). When credits are back (~monthly reset), suggested slates appear here automatically — until then, use the calculator below with lines from the PrizePicks app.</div>', unsafe_allow_html=True)
     else:
-        _pp_flat = [b for v in _pp_vb(_pp_raw).values() for b in v]
-        _pp_seen = set()
-        for b in sorted(_pp_flat, key=lambda x: -x["fair_prob"]):
-            if b["match"] in _pp_seen or not 0.55 <= b["fair_prob"] <= 0.80:
-                continue
-            _pp_seen.add(b["match"])
-            pool.append(b)
+        if st.button(f"⚡ Fetch player props for slates (≈{est} API credits, cached 30 min)"):
+            st.session_state["pp_props_go"] = True
+        if st.session_state.get("pp_props_go"):
+            @st.cache_data(ttl=1800, show_spinner="Fetching player props…")
+            def _pp_props(_d):
+                rows = []
+                for label, e, mk in _pp_prop_plan():
+                    evd = _pp_evodds(_PP_SPORTS[label], e["id"], ",".join(mk), books=_PP_CB)
+                    rows += [r for r in _pp_side(evd, label) if r["mode"] == "fair"]
+                return rows
+            prop_rows = _pp_props(f"{pp_today}-props")
+            seen_pl = set()
+            for b in sorted(prop_rows, key=lambda x: -x["fair_prob"]):
+                player = b["pick"].split(" Over ")[0].split(" Under ")[0]
+                if (b["match"], player) in seen_pl or not 0.55 <= b["fair_prob"] <= 0.75:
+                    continue
+                seen_pl.add((b["match"], player))
+                pool.append(b)
+            if not prop_rows:
+                st.markdown('<div style="color:#94a3b8;font-size:13px;padding:12px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No props came back — books post player props closer to game time, and fetches fail without API credits. Try again later.</div>', unsafe_allow_html=True)
+            elif len(pool) < 3:
+                st.markdown('<div style="color:#64748b;font-size:13px;padding:14px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">Props came back, but fewer than 3 players sit in the 55–75% band right now — not enough for an honest slate.</div>', unsafe_allow_html=True)
 
-    if len(pool) < 3:
-        if not pp_src.startswith("Player props") or st.session_state.get("pp_props_go"):
-            st.markdown('<div style="color:#64748b;font-size:13px;padding:14px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">Not enough picks in the 55%+ band right now to build slates.</div>', unsafe_allow_html=True)
-    else:
+    if len(pool) >= 3:
         slate_ns = [n for n in (3, 4, 5) if len(pool) >= n]
         scols = st.columns(len(slate_ns))
         for scol, n in zip(scols, slate_ns):
@@ -1574,7 +1560,7 @@ elif page == "🎲 PrizePicks":
                 st.markdown(
                     '<div class="best-play-card">'
                     f'<div class="best-play-label">FLEX {n}-PICK</div>'
-                    f'<div class="best-play-sub">{"Player props · one per player" if pp_src.startswith("Player props") else "Top leans 55–80% · one per game"}</div>'
+                    f'<div class="best-play-sub">Player props · one per player</div>'
                     f'{legs_html}'
                     '<div style="display:flex;justify-content:space-between;margin-top:10px">'
                     f'<span style="color:#64748b;font-size:11px">perfect {s_dist[-1]*100:.0f}% · top {max(PP_FLEX[n].values()):g}x</span>'
@@ -1586,10 +1572,7 @@ elif page == "🎲 PrizePicks":
                     for i, l in enumerate(legs):
                         st.session_state[f"pp_l{i}"] = f"{l['pick'][:34]} · {l['match'][:22]}"
                         st.session_state[f"pp_p{i}"] = min(97, max(30, int(round(l["fair_prob"] * 100))))
-        if pp_src.startswith("Player props"):
-            st.caption("These are real sportsbook player-prop lines de-vigged to Fair % — the direct PrizePicks comparison. Check that PrizePicks' line matches the one shown (e.g. 21.5): if PrizePicks hangs a friendlier line, your true hit% is even better; a worse line means recompute. One pick per player, correlated same-game stacks avoided.")
-        else:
-            st.caption("Probabilities = the board's de-vigged multi-book Fair %. PrizePicks only offers player-stat lines, so mirror these strong sides with matching player props there — or bet these exact legs as a Flex-style parlay at FanDuel/DraftKings. EV shown is against the Flex payout ladder at these probabilities.")
+        st.caption("Real sportsbook player-prop lines de-vigged to Fair % — apples-to-apples with PrizePicks. Check that PrizePicks' line matches the one shown (e.g. 21.5): a friendlier PrizePicks line makes your true hit% even better; a worse one means recompute in the calculator. One pick per player; correlated same-player stacks avoided.")
 
 
     # ── Build an entry ──────────────────────────────────────────────────────
