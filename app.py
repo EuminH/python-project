@@ -31,7 +31,7 @@ load_dotenv()  # local .env fallback (does not override secrets already set abov
 import importlib
 import live_data as _ld_mod
 import value_betting as _vb_mod
-if getattr(_vb_mod, "ENGINE_VERSION", 0) < 8 or not hasattr(_ld_mod, "get_tennis_rankings"):
+if getattr(_vb_mod, "ENGINE_VERSION", 0) < 9 or not hasattr(_ld_mod, "get_tennis_rankings"):
     importlib.reload(_ld_mod)
     importlib.reload(_vb_mod)
 
@@ -1547,7 +1547,7 @@ elif page == "🎲 PrizePicks":
     pp_n = ec2.selectbox("Number of picks", valid_ns, key="pp_n")
     pp_stake = ec3.number_input("Entry ($)", 1.0, 10000.0, 20.0, 5.0)
 
-    st.caption("For each pick, estimate the chance it hits. 50% = pure coin flip. If our board prices the same player/market, use its Fair% — otherwise be honest with yourself; 55%+ should feel rare.")
+    st.caption("For each pick, estimate the chance it hits. 50% = pure coin flip. Best source: fetch the same player prop on the 🎯 Side Bets page (e.g. Player points O/U) and use its de-vigged Fair% against the PrizePicks line. Otherwise be honest with yourself; 55%+ should feel rare.")
     probs, labels_list = [], []
     for i in range(int(pp_n)):
         c1, c2 = st.columns([2.2, 1])

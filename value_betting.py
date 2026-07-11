@@ -25,7 +25,7 @@ from sports_betting import american_to_decimal
 # Bumped on engine changes; app.py force-reloads this module when the loaded
 # copy is older (works around Streamlit Cloud keeping stale modules in memory
 # across deploys, which crashed the app with ImportErrors twice).
-ENGINE_VERSION = 8
+ENGINE_VERSION = 9
 
 # The Odds API sport key -> ESPN scoreboard key, for the free fallback feed
 # used when quota is exhausted. ESPN carries DraftKings moneylines for these.
@@ -122,12 +122,7 @@ def discover_sports():
     SPORT_TAGS.update({lbl: _tag_for_key(k) for lbl, k in picked.items()})
     SIDE_MARKETS.clear()
     for lbl, k in picked.items():
-        if k.startswith("soccer"):
-            SIDE_MARKETS[lbl] = dict(_SOCCER_SIDE)
-        elif k.startswith("tennis"):
-            SIDE_MARKETS[lbl] = dict(_TENNIS_SIDE)
-        else:
-            SIDE_MARKETS[lbl] = dict(_US_SIDE)
+        SIDE_MARKETS[lbl] = _side_menu_for_key(k)
     return SPORTS
 
 
@@ -374,11 +369,62 @@ _US_SIDE = {
     "team_totals":       "Team totals",
 }
 
+# Player-prop menus per sport group (The Odds API per-event market keys).
+# Over/Under pairs per player de-vig exactly like any 2-way market.
+_MLB_SIDE = dict(_US_SIDE) | {
+    "batter_hits":         "Batter hits O/U",
+    "batter_total_bases":  "Batter total bases O/U",
+    "batter_home_runs":    "Batter home runs O/U",
+    "batter_rbis":         "Batter RBIs O/U",
+    "batter_runs_scored":  "Batter runs O/U",
+    "pitcher_strikeouts":  "Pitcher strikeouts O/U",
+    "pitcher_outs":        "Pitcher outs O/U",
+}
+
+_BASKETBALL_SIDE = dict(_US_SIDE) | {
+    "player_points":                  "Player points O/U",
+    "player_rebounds":                "Player rebounds O/U",
+    "player_assists":                 "Player assists O/U",
+    "player_threes":                  "Player threes O/U",
+    "player_points_rebounds_assists": "Player PRA O/U",
+}
+
+_NFL_SIDE = dict(_US_SIDE) | {
+    "player_pass_yds":      "Pass yards O/U",
+    "player_pass_tds":      "Pass TDs O/U",
+    "player_rush_yds":      "Rush yards O/U",
+    "player_receptions":    "Receptions O/U",
+    "player_reception_yds": "Receiving yards O/U",
+    "player_anytime_td":    "Anytime TD",
+}
+
+_NHL_SIDE = dict(_US_SIDE) | {
+    "player_points":        "Player points O/U",
+    "player_goals":         "Player goals O/U",
+    "player_shots_on_goal": "Shots on goal O/U",
+    "player_assists":       "Player assists O/U",
+}
+
+def _side_menu_for_key(key):
+    if key.startswith("soccer"):
+        return dict(_SOCCER_SIDE)
+    if key.startswith("tennis"):
+        return dict(_TENNIS_SIDE)
+    if key.startswith("baseball"):
+        return dict(_MLB_SIDE)
+    if key.startswith("basketball"):
+        return dict(_BASKETBALL_SIDE)
+    if key.startswith("americanfootball"):
+        return dict(_NFL_SIDE)
+    if key.startswith("icehockey"):
+        return dict(_NHL_SIDE)
+    return dict(_US_SIDE)
+
 SIDE_MARKETS = {
     "World Cup":     dict(_SOCCER_SIDE),
     "ATP Wimbledon": dict(_TENNIS_SIDE),
     "WTA Wimbledon": dict(_TENNIS_SIDE),
-    "MLB":           dict(_US_SIDE),
+    "MLB":           dict(_MLB_SIDE),
 }
 
 
