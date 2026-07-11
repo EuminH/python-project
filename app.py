@@ -224,6 +224,7 @@ with st.sidebar:
         "📊 Kelly Staking",
         "🎰 Parlay Builder",
         "🧩 Build My Parlay",
+        "🎲 PrizePicks",
         "📋 Bet Tracker",
     ], label_visibility="collapsed")
 
@@ -1367,6 +1368,167 @@ elif page == "🧩 Build My Parlay":
                 st.success(f"Parlay logged — ${stake:.0f} to win ${payout - stake:,.2f}. Track it in 📋 Bet Tracker.")
 
             st.caption("Fair % = median power-devig consensus of up to 8 US books. Hit% assumes legs are independent (true across different games). A leg with grey EV is −EV on its own and drags the parlay down.")
+
+
+elif page == "🎲 PrizePicks":
+    pp_today = datetime.date.today()
+
+    st.markdown(f"""
+    <div class="topbar">
+        <div class="topbar-left">
+            <div style="width:10px;height:10px;border-radius:50%;background:#8b5cf6"></div>
+            <span class="sport-badge">PRIZEPICKS LAB</span>
+            <span class="topbar-sub">· PICK'EM ENTRY MATH · POWER & FLEX</span>
+        </div>
+        <div class="topbar-date">{pp_today.strftime('%a %b %-d')}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div style="color:#e2e8f0;font-size:24px;font-weight:700;margin-bottom:2px">PrizePicks entry calculator</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#94a3b8;font-size:14px;margin-bottom:12px">Enter your picks and how likely each is to hit — get the honest EV of the entry, including Flex plays\' partial payouts. PrizePicks blocks automated reads of its live board (DataDome bot-wall), so lines can\'t be pulled in automatically — copy them from the app.</div>', unsafe_allow_html=True)
+
+    # Standard published multipliers. PrizePicks tweaks these occasionally —
+    # verify in the app; the numbers are editable below via the entry type.
+    PP_POWER = {2: {2: 3.0}, 3: {3: 5.0}, 4: {4: 10.0}}
+    PP_FLEX = {3: {3: 2.25, 2: 1.25},
+               4: {4: 5.0, 3: 1.5},
+               5: {5: 10.0, 4: 2.0, 3: 0.4},
+               6: {6: 25.0, 5: 2.0, 4: 0.4}}
+
+    def _hits_dist(ps):
+        """Poisson-binomial: P(k of n picks hit) for independent picks."""
+        dist = [1.0]
+        for p in ps:
+            nd = [0.0] * (len(dist) + 1)
+            for k, v in enumerate(dist):
+                nd[k] += v * (1 - p)
+                nd[k + 1] += v * p
+            dist = nd
+        return dist
+
+    def _entry_ev(ps, sched):
+        dist = _hits_dist(ps)
+        return sum(dist[k] * sched.get(k, 0.0) for k in range(len(dist))) - 1.0, dist
+
+    def _breakeven(sched, n):
+        """Equal per-pick win% where the entry EV is zero (bisection)."""
+        lo, hi = 0.30, 0.95
+        for _ in range(50):
+            mid = (lo + hi) / 2
+            ev, _d = _entry_ev([mid] * n, sched)
+            if ev < 0:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    # ── Breakeven reference table ───────────────────────────────────────────
+    st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin:8px 0 10px">📐 What each entry type demands — breakeven win% per pick</div>', unsafe_allow_html=True)
+    rows_html = ""
+    for label, book in (("Power", PP_POWER), ("Flex", PP_FLEX)):
+        for n, sched in book.items():
+            be = _breakeven(sched, n)
+            pays = " · ".join(f"{k}/{n} → {m:g}x" for k, m in sorted(sched.items(), reverse=True))
+            rows_html += ('<tr style="border-bottom:1px solid #111127">'
+                          f'<td style="color:#e2e8f0;padding:6px 8px 6px 0;font-weight:600">{label} {n}-pick</td>'
+                          f'<td style="color:#94a3b8;padding:6px 8px">{pays}</td>'
+                          f'<td style="color:#f97316;text-align:right;padding:6px 0;font-weight:700">{be*100:.1f}%</td></tr>')
+    st.markdown('<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
+                '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+                '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                '<th style="text-align:left;padding:5px 8px 5px 0;font-weight:500">ENTRY</th>'
+                '<th style="text-align:left;padding:5px 8px;font-weight:500">PAYOUTS</th>'
+                '<th style="text-align:right;padding:5px 0;font-weight:500">NEEDED PER PICK</th></tr>'
+                + rows_html + '</table></div>', unsafe_allow_html=True)
+    st.caption("A coin-flip pick hits 50%. Every entry type needs 54–58% per pick to break even — that gap is PrizePicks' vig. Standard published multipliers; verify current ones in the app.")
+
+    # ── Build an entry ──────────────────────────────────────────────────────
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">🧮 Score your entry</div>', unsafe_allow_html=True)
+
+    ec1, ec2, ec3 = st.columns([1, 1, 1])
+    pp_type = ec1.radio("Entry type", ["Power", "Flex"], horizontal=True)
+    valid_ns = list((PP_POWER if pp_type == "Power" else PP_FLEX).keys())
+    pp_n = ec2.selectbox("Number of picks", valid_ns)
+    pp_stake = ec3.number_input("Entry ($)", 1.0, 10000.0, 20.0, 5.0)
+
+    st.caption("For each pick, estimate the chance it hits. 50% = pure coin flip. If our board prices the same player/market, use its Fair% — otherwise be honest with yourself; 55%+ should feel rare.")
+    probs, labels_list = [], []
+    for i in range(int(pp_n)):
+        c1, c2 = st.columns([2.2, 1])
+        lbl = c1.text_input(f"Pick {i+1}", placeholder="e.g. A. Wilson Over 21.5 pts", key=f"pp_l{i}")
+        pr = c2.slider(f"Hit %", 30, 85, 50, 1, key=f"pp_p{i}")
+        labels_list.append(lbl or f"Pick {i+1}")
+        probs.append(pr / 100)
+
+    sched = (PP_POWER if pp_type == "Power" else PP_FLEX)[pp_n]
+    ev, dist = _entry_ev(probs, sched)
+    ev_dollars = ev * pp_stake
+    p_max = dist[-1]
+
+    # outcome table
+    out_rows = ""
+    for k in sorted(range(len(dist)), reverse=True):
+        pay = sched.get(k, 0.0)
+        if dist[k] < 1e-9 and pay == 0:
+            continue
+        clr = "#22c55e" if pay >= 1 else ("#94a3b8" if pay > 0 else "#475569")
+        out_rows += ('<tr style="border-bottom:1px solid #111127">'
+                     f'<td style="color:#e2e8f0;padding:5px 8px 5px 0">{k} of {pp_n} hit</td>'
+                     f'<td style="color:#94a3b8;text-align:right;padding:5px 8px">{dist[k]*100:.1f}%</td>'
+                     f'<td style="color:{clr};text-align:right;padding:5px 8px;font-weight:600">{pay:g}x</td>'
+                     f'<td style="color:{clr};text-align:right;padding:5px 0">${dist[k]*pay*pp_stake:,.2f}</td></tr>')
+    st.markdown('<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;margin-top:6px">'
+                '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+                '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                '<th style="text-align:left;padding:5px 8px 5px 0;font-weight:500">OUTCOME</th>'
+                '<th style="text-align:right;padding:5px 8px;font-weight:500">CHANCE</th>'
+                '<th style="text-align:right;padding:5px 8px;font-weight:500">PAYS</th>'
+                '<th style="text-align:right;padding:5px 0;font-weight:500">EV CONTRIBUTION</th></tr>'
+                + out_rows + '</table></div>', unsafe_allow_html=True)
+
+    ev_color = "#22c55e" if ev > 0 else "#ef4444"
+    st.markdown(
+        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px">'
+        f'<div class="stat-cell"><div class="stat-cell-label">Perfect entry</div><div class="stat-cell-val">{p_max*100:.1f}%</div></div>'
+        f'<div class="stat-cell"><div class="stat-cell-label">Top payout</div><div class="stat-cell-val orange">{max(sched.values()):g}x (${pp_stake*max(sched.values()):,.0f})</div></div>'
+        f'<div class="stat-cell"><div class="stat-cell-label">EV / $1</div><div class="stat-cell-val" style="color:{ev_color}">{ev:+.3f}</div></div>'
+        f'<div class="stat-cell"><div class="stat-cell-label">EV on ${pp_stake:.0f}</div><div class="stat-cell-val" style="color:{ev_color}">${ev_dollars:+,.2f}</div></div>'
+        '</div>', unsafe_allow_html=True)
+
+    if ev > 0.02:
+        vc, icon, vtitle = "#22c55e", "✅", "WORTH IT — +EV ENTRY"
+        vmsg = f"If your probabilities are honest, this entry returns {ev*100:+.1f}% long-run. That requires real edges on the lines — rare but possible."
+    elif ev > -0.02:
+        vc, icon, vtitle = "#f59e0b", "⚠️", "ROUGHLY BREAK-EVEN"
+        vmsg = "You're paying no meaningful vig at these probabilities — fine as entertainment, not an edge."
+    else:
+        vc, icon, vtitle = "#ef4444", "❌", "NOT WORTH IT — NEGATIVE EV"
+        vmsg = f"At these probabilities you lose {abs(ev)*100:.1f}% of every dollar long-run. Coin-flip picks (50%) always land here — you need ~{_breakeven(sched, pp_n)*100:.0f}% per pick just to break even."
+    st.markdown(
+        f'<div style="background:{vc}18;border:1px solid {vc}55;border-radius:12px;padding:16px 20px;margin-top:12px">'
+        f'<div style="color:{vc};font-size:16px;font-weight:700;margin-bottom:4px">{icon} {vtitle}</div>'
+        f'<div style="color:#cbd5e1;font-size:13px;line-height:1.6">{vmsg}</div></div>',
+        unsafe_allow_html=True)
+
+    if st.button(f"➕ Log this entry (${pp_stake:.0f} {pp_type} {pp_n}-pick)"):
+        top_mult = max(sched.values())
+        dec = top_mult
+        am = int(round((dec - 1) * 100)) if dec >= 2 else -int(round(100 / (dec - 1)))
+        bets_file = load_bets()
+        bets_file.append({
+            "id": int(datetime.datetime.now().timestamp()),
+            "date": datetime.date.today().isoformat(),
+            "sport": "PrizePicks", "event": " + ".join(l[:24] for l in labels_list)[:90],
+            "pick": f"{pp_type} {pp_n}-pick", "odds": am, "stake": float(pp_stake),
+            "book": "PrizePicks", "result": "pending", "payout": 0.0,
+            "market": "PickEm", "logged_dec": dec, "fair_prob": p_max,
+        })
+        save_bets(bets_file)
+        st.success("Logged to 📋 Bet Tracker — settle it manually when the slate finishes (payout auto-fills only for a perfect entry; adjust for flex partials).")
+
+    st.caption("Independence assumed between picks (avoid correlated same-game picks — PrizePicks also restricts many). EV math covers all partial Flex payouts via the exact hit distribution.")
+
 
 
 elif page == "📋 Bet Tracker":
