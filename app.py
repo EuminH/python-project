@@ -1135,6 +1135,56 @@ elif page == "🔢 Odds Calculator":
         else:
             st.warning(f"No arbitrage. Book margin: {margin:.2f}%")
 
+    # ── No-vig (fair odds) calculator ────────────────────────────────────────
+    st.divider()
+    st.subheader("No-vig calculator")
+    st.caption("Paste a market's odds (2 sides, or 3 with the draw) and see the true probabilities and fair odds once the bookmaker's margin is stripped out — both the simple proportional method and the power method the dashboard uses (it corrects the bias books put on longshots).")
+
+    from value_betting import _devig_power
+
+    def _fair_american(p):
+        dec = 1 / p
+        return f"+{round((dec-1)*100):d}" if dec >= 2 else f"-{round(100/(dec-1)):d}"
+
+    nv1, nv2, nv3 = st.columns(3)
+    nv_o1 = nv1.number_input("Side 1 odds", value=-110, step=5, key="nv1")
+    nv_o2 = nv2.number_input("Side 2 odds", value=-110, step=5, key="nv2")
+    nv_draw = nv3.checkbox("3-way market (add draw)", key="nvd")
+    nv_o3 = nv3.number_input("Draw odds", value=250, step=5, key="nv3", disabled=not nv_draw)
+
+    odds_list = [int(nv_o1), int(nv_o2)] + ([int(nv_o3)] if nv_draw else [])
+    names = ["Side 1", "Side 2"] + (["Draw"] if nv_draw else [])
+    imps = {n: american_implied_prob(o) for n, o in zip(names, odds_list)}
+    over = sum(imps.values())
+    vig_pct = (over - 1) / over * 100
+
+    if over <= 1:
+        st.success(f"These odds sum under 100% ({over*100:.2f}%) — that's an arbitrage, not vig. See the checker above.")
+    else:
+        prop = {n: v / over for n, v in imps.items()}
+        power = _devig_power(imps)
+        m1, m2 = st.columns(2)
+        m1.metric("Overround (sum of implied)", f"{over*100:.2f}%")
+        m2.metric("Bookmaker vig", f"{vig_pct:.2f}%")
+        rows_html = ""
+        for n, o in zip(names, odds_list):
+            rows_html += ('<tr style="border-bottom:1px solid #111127">'
+                          f'<td style="color:#e2e8f0;padding:6px 8px 6px 0;font-weight:600">{n} ({o:+d})</td>'
+                          f'<td style="color:#94a3b8;text-align:right;padding:6px 8px">{imps[n]*100:.2f}%</td>'
+                          f'<td style="color:#94a3b8;text-align:right;padding:6px 8px">{prop[n]*100:.2f}%</td>'
+                          f'<td style="color:#a78bfa;text-align:right;padding:6px 8px;font-weight:600">{power[n]*100:.2f}%</td>'
+                          f'<td style="color:#f97316;text-align:right;padding:6px 0;font-weight:700">{_fair_american(power[n])}</td></tr>')
+        st.markdown('<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;margin-top:8px">'
+                    '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+                    '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                    '<th style="text-align:left;padding:5px 8px 5px 0;font-weight:500">OUTCOME</th>'
+                    '<th style="text-align:right;padding:5px 8px;font-weight:500">IMPLIED</th>'
+                    '<th style="text-align:right;padding:5px 8px;font-weight:500">FAIR (PROPORTIONAL)</th>'
+                    '<th style="text-align:right;padding:5px 8px;font-weight:500">FAIR (POWER)</th>'
+                    '<th style="text-align:right;padding:5px 0;font-weight:500">FAIR ODDS</th></tr>'
+                    + rows_html + '</table></div>', unsafe_allow_html=True)
+        st.caption("If you can bet a side at better than its FAIR ODDS anywhere, that bet is +EV. Note how the power method gives longshots less probability than the proportional method — books shade their lines against longshot bettors, and proportional de-vigging inherits that bias.")
+
 
 # ── Kelly Staking ──────────────────────────────────────────────────────────
 elif page == "📊 Kelly Staking":
