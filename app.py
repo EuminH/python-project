@@ -69,6 +69,16 @@ def _start_clv_guard():
 
 _start_clv_guard()
 
+# ── Shared odds loader ──────────────────────────────────────────────────────
+# One cache for every page (Daily Intelligence, Side Bets, Build My Parlay,
+# PrizePicks) so visiting multiple pages never repeats the API fetch.
+@st.cache_data(ttl=900, show_spinner="Scanning the books…")
+def shared_load_events(_d):
+    from value_betting import fetch_events, snapshot_closing
+    ev = fetch_events(days=2)
+    snapshot_closing(ev)   # keep latest pre-kickoff prices for CLV grading
+    return ev
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -281,14 +291,7 @@ if page == "🏠 Daily Intelligence":
     }
     sort_key = SORT_KEYS[sort_choice]
 
-    # Cache the raw API fetch only — switching book/market/sliders re-computes locally
-    @st.cache_data(ttl=900, show_spinner="Scanning the books for value…")
-    def load_events(_d):
-        ev = fetch_events(days=2)
-        snapshot_closing(ev)   # keep latest pre-kickoff prices for CLV grading
-        return ev
-
-    raw = load_events(f"{today}-v4")
+    raw = shared_load_events(f"{today}-v4")
     data = value_bets(raw, min_ev=-1.0, bet_books=BET_BOOKS)
 
     # Free-feed banner: sports served by the ESPN/DraftKings fallback
@@ -654,11 +657,7 @@ elif page == "🎯 Side Bets":
     st.markdown('<div style="color:#e2e8f0;font-size:24px;font-weight:700;margin-bottom:2px">Side bets &amp; props</div>', unsafe_allow_html=True)
     st.markdown('<div style="color:#94a3b8;font-size:14px;margin-bottom:14px">Pick a game, choose the prop markets you care about, and fetch. Where the market can be de-vigged (goals O/U, corners, BTTS, handicaps) you get a real <b>Fair % and EV</b>. Where it can\'t (goalscorers — many players can score), you get the <b>best price vs the median book</b> instead: pure line-shopping, not an EV claim.</div>', unsafe_allow_html=True)
 
-    @st.cache_data(ttl=900, show_spinner="Loading games…")
-    def _sb_events(_d):
-        return fetch_events(days=2)
-
-    raw = _sb_events(f"{sb_today}-v4")
+    raw = shared_load_events(f"{sb_today}-v4")
     sb_sport = st.selectbox("Sport", list(SIDE_MARKETS.keys()),
                             format_func=lambda s: f"{SPORT_TAGS.get(s,'')} {s}")
     events = raw.get(sb_sport, [])
@@ -1215,11 +1214,7 @@ elif page == "🧩 Build My Parlay":
     st.markdown('<div style="color:#e2e8f0;font-size:24px;font-weight:700;margin-bottom:2px">Build your own parlay</div>', unsafe_allow_html=True)
     st.markdown('<div style="color:#94a3b8;font-size:14px;margin-bottom:16px">Pick the games and sides you like from today &amp; tomorrow. The lab combines the de-vigged fair odds and tells you the parlay\'s EV — and whether it\'s worth placing.</div>', unsafe_allow_html=True)
 
-    @st.cache_data(ttl=900, show_spinner="Loading today & tomorrow's games…")
-    def _load_events_bp(_d):
-        return fetch_events(days=2)
-
-    data = value_bets(_load_events_bp(f"{bp_today}-v4"), min_ev=-1.0, bet_books=BP_BOOKS)
+    data = value_bets(shared_load_events(f"{bp_today}-v4"), min_ev=-1.0, bet_books=BP_BOOKS)
     pool_all = [b for bets in data.values() for b in bets]
 
     if not pool_all:
@@ -1442,14 +1437,64 @@ elif page == "🎲 PrizePicks":
                 + rows_html + '</table></div>', unsafe_allow_html=True)
     st.caption("A coin-flip pick hits 50%. Every entry type needs 54–58% per pick to break even — that gap is PrizePicks' vig. Standard published multipliers; verify current ones in the app.")
 
+    # ── Suggested Flex slates from the live board ───────────────────────────
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">🎯 Suggested Flex slates — built from the live board</div>', unsafe_allow_html=True)
+
+    from value_betting import value_bets as _pp_vb, SPORT_TAGS as _PP_TAGS
+    _pp_raw = shared_load_events(f"{pp_today}-v4")
+    _pp_flat = [b for v in _pp_vb(_pp_raw).values() for b in v]
+    # PrizePicks-plausible band: solid leans, not -5000 locks
+    _pp_pool, _pp_seen = [], set()
+    for b in sorted(_pp_flat, key=lambda x: -x["fair_prob"]):
+        if b["match"] in _pp_seen or not 0.55 <= b["fair_prob"] <= 0.80:
+            continue
+        _pp_seen.add(b["match"])
+        _pp_pool.append(b)
+
+    if len(_pp_pool) < 3:
+        st.markdown('<div style="color:#64748b;font-size:13px;padding:14px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">Not enough games in the 55–80% band right now to build slates — check back when more games are on the board.</div>', unsafe_allow_html=True)
+    else:
+        slate_ns = [n for n in (3, 4, 5) if len(_pp_pool) >= n]
+        scols = st.columns(len(slate_ns))
+        for scol, n in zip(scols, slate_ns):
+            legs = _pp_pool[:n]
+            ps = [l["fair_prob"] for l in legs]
+            s_ev, s_dist = _entry_ev(ps, PP_FLEX[n])
+            evc = "#22c55e" if s_ev > 0 else "#ef4444"
+            legs_html = "".join(
+                '<div style="padding:5px 0;border-bottom:1px solid #111127">'
+                f'<div style="display:flex;justify-content:space-between">'
+                f'<span style="color:#e2e8f0;font-size:12px">{_PP_TAGS.get(l["sport"],"")} {l["pick"][:22]}</span>'
+                f'<span style="color:#a78bfa;font-size:12px;font-weight:600">{l["fair_prob"]*100:.0f}%</span></div>'
+                f'<div style="color:#64748b;font-size:10px">{l["market"]} · {l["match"][:28]}</div></div>'
+                for l in legs)
+            with scol:
+                st.markdown(
+                    '<div class="best-play-card">'
+                    f'<div class="best-play-label">FLEX {n}-PICK</div>'
+                    f'<div class="best-play-sub">Top leans 55–80% · one per game</div>'
+                    f'{legs_html}'
+                    '<div style="display:flex;justify-content:space-between;margin-top:10px">'
+                    f'<span style="color:#64748b;font-size:11px">perfect {s_dist[-1]*100:.0f}% · top {max(PP_FLEX[n].values()):g}x</span>'
+                    f'<span style="color:{evc};font-size:13px;font-weight:700">EV {s_ev:+.2f}/$1</span>'
+                    '</div></div>', unsafe_allow_html=True)
+                if st.button(f"Use in calculator ↓", key=f"pp_use{n}", use_container_width=True):
+                    st.session_state["pp_type"] = "Flex"
+                    st.session_state["pp_n"] = n
+                    for i, l in enumerate(legs):
+                        st.session_state[f"pp_l{i}"] = f"{l['pick'][:34]} · {l['match'][:22]}"
+                        st.session_state[f"pp_p{i}"] = min(97, max(30, int(round(l["fair_prob"] * 100))))
+        st.caption("Probabilities = the board's de-vigged multi-book Fair %. PrizePicks only offers player-stat lines, so mirror these strong sides with matching player props there — or bet these exact legs as a Flex-style parlay at FanDuel/DraftKings. EV shown is against the Flex payout ladder at these probabilities.")
+
     # ── Build an entry ──────────────────────────────────────────────────────
     st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
     st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">🧮 Score your entry</div>', unsafe_allow_html=True)
 
     ec1, ec2, ec3 = st.columns([1, 1, 1])
-    pp_type = ec1.radio("Entry type", ["Power", "Flex"], horizontal=True)
+    pp_type = ec1.radio("Entry type", ["Power", "Flex"], horizontal=True, key="pp_type")
     valid_ns = list((PP_POWER if pp_type == "Power" else PP_FLEX).keys())
-    pp_n = ec2.selectbox("Number of picks", valid_ns)
+    pp_n = ec2.selectbox("Number of picks", valid_ns, key="pp_n")
     pp_stake = ec3.number_input("Entry ($)", 1.0, 10000.0, 20.0, 5.0)
 
     st.caption("For each pick, estimate the chance it hits. 50% = pure coin flip. If our board prices the same player/market, use its Fair% — otherwise be honest with yourself; 55%+ should feel rare.")
@@ -1457,7 +1502,7 @@ elif page == "🎲 PrizePicks":
     for i in range(int(pp_n)):
         c1, c2 = st.columns([2.2, 1])
         lbl = c1.text_input(f"Pick {i+1}", placeholder="e.g. A. Wilson Over 21.5 pts", key=f"pp_l{i}")
-        pr = c2.slider(f"Hit %", 30, 85, 50, 1, key=f"pp_p{i}")
+        pr = c2.slider(f"Hit %", 30, 97, 50, 1, key=f"pp_p{i}")
         labels_list.append(lbl or f"Pick {i+1}")
         probs.append(pr / 100)
 
