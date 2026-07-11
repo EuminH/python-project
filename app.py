@@ -1601,10 +1601,15 @@ elif page == "🎲 PrizePicks":
                 st.markdown('<div style="color:#64748b;font-size:13px;padding:14px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">Props came back, but fewer than 3 players sit in the 55–75% band right now — not enough for an honest slate.</div>', unsafe_allow_html=True)
 
     if len(pool) >= 3:
-        slate_ns = [n for n in (3, 4, 5) if len(pool) >= n]
-        scols = st.columns(len(slate_ns))
-        for scol, n in zip(scols, slate_ns):
-            legs = pool[:n]
+        # Partition the pool so no leg repeats across slates: the 3-pick takes
+        # the highest-probability legs, the 4-pick the next tier, then the 5-pick.
+        slates, _idx = [], 0
+        for n in (3, 4, 5):
+            if len(pool) - _idx >= n:
+                slates.append((n, pool[_idx:_idx + n]))
+                _idx += n
+        scols = st.columns(len(slates))
+        for scol, (n, legs) in zip(scols, slates):
             ps = [l["fair_prob"] for l in legs]
             s_ev, s_dist = _entry_ev(ps, PP_FLEX[n])
             evc = "#22c55e" if s_ev > 0 else "#ef4444"
@@ -1631,7 +1636,7 @@ elif page == "🎲 PrizePicks":
                     for i, l in enumerate(legs):
                         st.session_state[f"pp_l{i}"] = f"{l['pick'][:34]} · {l['match'][:22]}"
                         st.session_state[f"pp_p{i}"] = min(97, max(30, int(round(l["fair_prob"] * 100))))
-        st.caption("Real sportsbook player-prop lines de-vigged to Fair % — apples-to-apples with PrizePicks. Check that PrizePicks' line matches the one shown (e.g. 21.5): a friendlier PrizePicks line makes your true hit% even better; a worse one means recompute in the calculator. One pick per player; correlated same-player stacks avoided.")
+        st.caption("Real sportsbook player-prop lines de-vigged to Fair % — apples-to-apples with PrizePicks. Every slate uses a different set of players (no repeated legs across cards; the 3-pick gets the strongest probabilities). Check that PrizePicks' line matches the one shown — a friendlier line makes your true hit% even better. Building all three slates needs 12 qualifying players, so fewer cards may show on thin days.")
 
 
     # ── Build an entry ──────────────────────────────────────────────────────
