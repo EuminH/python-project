@@ -1678,37 +1678,78 @@ elif page == "🎲 PrizePicks":
                             placeholder="A'ja Wilson 21.5 Points More\nNapheesa Collier 8.5 Rebounds\nAaron Judge 1.5 Total Bases Less",
                             label_visibility="collapsed", key="pp_paste")
 
-    _STAT_MAP = [
-        (("pts+reb+ast", "pra", "points+rebounds+assists", "p+r+a"), "Player PRA O/U"),
-        (("rebound", "reb"), "Player rebounds O/U"),
-        (("assist", "ast"), "Player assists O/U"),
-        (("3-pt", "three", "3pt"), "Player threes O/U"),
-        (("point", "pts"), "Player points O/U"),
-        (("total base", "bases"), "Batter total bases O/U"),
-        (("home run", "homer", "hr"), "Batter home runs O/U"),
-        (("rbi",), "Batter RBIs O/U"),
-        (("hit",), "Batter hits O/U"),
-        (("run",), "Batter runs O/U"),
-        (("strikeout", "ks", "punchout"), "Pitcher strikeouts O/U"),
-        (("outs",), "Pitcher outs O/U"),
-    ]
-
-    def _stat_to_market(txt):
-        t = txt.lower()
-        for keys, label in _STAT_MAP:
-            if any(k in t for k in keys):
-                return label
-        return None
-
     import re as _re, math as _math, unicodedata as _uni
     from statistics import NormalDist as _ND
+
+    # Every book prop label -> a stat "bucket". PrizePicks stat names are matched
+    # to the same buckets, so soccer's "Shots on target" and basketball's
+    # "Player points O/U" both resolve without exact-string matching.
+    _LABEL_BUCKET = {
+        "Player points O/U": "points", "Player rebounds O/U": "rebounds",
+        "Player assists O/U": "assists", "Player threes O/U": "threes",
+        "Player PRA O/U": "pra", "Player goals O/U": "goals",
+        "Shots on goal O/U": "sog", "Shots on target": "sot", "Assists O/U": "assists",
+        "Batter hits O/U": "hits", "Batter total bases O/U": "total_bases",
+        "Batter home runs O/U": "home_runs", "Batter RBIs O/U": "rbis",
+        "Batter runs O/U": "runs", "Pitcher strikeouts O/U": "strikeouts",
+        "Pitcher outs O/U": "outs", "Pass yards O/U": "pass_yds",
+        "Pass TDs O/U": "pass_tds", "Rush yards O/U": "rush_yds",
+        "Receptions O/U": "receptions", "Receiving yards O/U": "rec_yds",
+    }
+    _BUCKET_NICE = {"points": "Points", "rebounds": "Rebounds", "assists": "Assists",
+                    "threes": "3-PT Made", "pra": "PRA", "goals": "Goals", "sog": "Shots on Goal",
+                    "sot": "Shots on Target", "hits": "Hits", "total_bases": "Total Bases",
+                    "home_runs": "Home Runs", "rbis": "RBIs", "runs": "Runs",
+                    "strikeouts": "Strikeouts", "outs": "Outs", "pass_yds": "Pass Yards",
+                    "pass_tds": "Pass TDs", "rush_yds": "Rush Yards", "receptions": "Receptions",
+                    "rec_yds": "Receiving Yards"}
+
+    def _stat_bucket(txt):
+        """Return (bucket, reason). bucket=None with a plain-English reason when
+        the books don't offer this prop (half-specific, goalie saves, etc.)."""
+        t = txt.lower()
+        if "goalie" in t or "goalkeeper" in t or "save" in t:
+            return None, "goalie saves aren't offered by the odds source (books only price the props listed on the Side Bets menu)"
+        if _re.search(r"\b(1h|2h|h1|h2|1st half|2nd half|first half|second half)\b", t):
+            return None, "half-specific props aren't priced by the books — only full-game"
+        checks = [
+            (("pts+reb+ast", "pra", "p+r+a"), "pra"),
+            (("shots on target", "sot"), "sot"),
+            (("shots on goal", "sog"), "sog"),
+            (("rebound",), "rebounds"),
+            (("3-pt", "three", "3pt"), "threes"),
+            (("total base", "bases"), "total_bases"),
+            (("home run", "homer"), "home_runs"),
+            (("rbi",), "rbis"),
+            (("strikeout", "punchout"), "strikeouts"),
+            (("pass",), "pass_yds"),
+            (("rush",), "rush_yds"),
+            (("reception",), "receptions"),
+            (("receiv",), "rec_yds"),
+            (("assist",), "assists"),
+            (("point", "pts"), "points"),
+            (("hit",), "hits"),
+            (("outs",), "outs"),
+            (("goal",), "goals"),
+            (("run",), "runs"),
+        ]
+        for keys, bucket in checks:
+            if any(k in t for k in keys):
+                return bucket, None
+        for kw, bucket in ((r"\breb\b", "rebounds"), (r"\bast\b", "assists"),
+                           (r"\bhr\b", "home_runs"), (r"\bks\b", "strikeouts"),
+                           (r"\bsog\b", "sog")):
+            if _re.search(kw, t):
+                return bucket, None
+        return None, "couldn't read the stat type"
 
     def _norm_nm(s):
         s = _uni.normalize("NFKD", s).encode("ascii", "ignore").decode()
         return s.casefold().replace(".", "").replace("'", "").strip()
 
     if pp_paste.strip():
-        book_idx = {}
+        # player -> {bucket: entry}
+        pl_markets = {}
         for b in prop_rows:
             p = b["pick"]
             if " Over " in p:
@@ -1717,16 +1758,19 @@ elif page == "🎲 PrizePicks":
                 pl, num, side = p.split(" Under ", 1)[0], p.split(" Under ", 1)[1], "under"
             else:
                 continue
+            bucket = _LABEL_BUCKET.get(b["market"])
+            if not bucket:
+                continue
             try:
                 bl = float(num.split()[0])
             except Exception:
                 continue
-            e = book_idx.setdefault((_norm_nm(pl), b["market"]),
-                                    {"line": bl, "book": b["book"], "match": b["match"]})
+            e = pl_markets.setdefault(_norm_nm(pl), {}).setdefault(
+                bucket, {"line": bl, "book": b["book"], "match": b["match"], "label": b["market"]})
             e[side] = b["fair_prob"]
             e["line"] = bl
         by_last = {}
-        for (nm, mk) in book_idx:
+        for nm in pl_markets:
             by_last.setdefault(nm.split()[-1] if nm.split() else nm, set()).add(nm)
 
         matched, unmatched = [], []
@@ -1744,23 +1788,25 @@ elif page == "🎲 PrizePicks":
             low = line.lower()
             side_pick = ("under" if ("less" in low or "under" in low)
                          else ("over" if ("more" in low or "over" in low) else None))
-            stat_txt = _re.sub(r"\b(more|less|over|under)\b", "", after, flags=_re.I)
             player_txt = _re.sub(r"\b(more|less|over|under)\b", "", before, flags=_re.I).strip(" -–—\t")
-            mk = _stat_to_market(stat_txt) or _stat_to_market(after)
-            if not mk:
-                unmatched.append((line, "couldn't read the stat type"))
+            bucket, reason = _stat_bucket(after)
+            if bucket is None:
+                unmatched.append((line, reason))
                 continue
             npl = _norm_nm(player_txt)
-            key = (npl, mk)
-            if key not in book_idx:
-                cand = [c for c in by_last.get(npl.split()[-1] if npl.split() else npl, set())
-                        if (c, mk) in book_idx]
+            mk_dict = pl_markets.get(npl)
+            if mk_dict is None:
+                cand = list(by_last.get(npl.split()[-1] if npl.split() else npl, set()))
                 if len(cand) == 1:
-                    key = (cand[0], mk)
-            if key not in book_idx:
-                unmatched.append((line, "no fetched sportsbook prop for this player + stat"))
+                    npl, mk_dict = cand[0], pl_markets.get(cand[0])
+            if mk_dict is None:
+                unmatched.append((line, "player isn't in the fetched games (fetch their game, or books may not price this player)"))
                 continue
-            e = book_idx[key]
+            e = mk_dict.get(bucket)
+            if e is None:
+                nice = _BUCKET_NICE.get(bucket, bucket)
+                unmatched.append((line, f"books don't price {nice} for this player (had: {', '.join(_BUCKET_NICE.get(x,x) for x in mk_dict) or 'none'})"))
+                continue
             over_b = e.get("over")
             if over_b is None and e.get("under") is not None:
                 over_b = 1 - e["under"]
@@ -1782,7 +1828,7 @@ elif page == "🎲 PrizePicks":
                 side, hit = "Less", under_pp
             else:
                 side, hit = ("More", over_pp) if over_pp >= under_pp else ("Less", under_pp)
-            matched.append({"player": player_txt, "market": mk, "pp_line": pp_line,
+            matched.append({"player": player_txt, "market": e["label"], "pp_line": pp_line,
                             "book_line": bl, "side": side, "hit": hit, "tag": tag,
                             "book": e["book"], "match": e["match"]})
 
