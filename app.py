@@ -69,15 +69,41 @@ def _start_clv_guard():
 
 _start_clv_guard()
 
-# ── Shared odds loader ──────────────────────────────────────────────────────
-# One cache for every page (Daily Intelligence, Side Bets, Build My Parlay,
-# PrizePicks) so visiting multiple pages never repeats the API fetch.
-@st.cache_data(ttl=900, show_spinner="Scanning the books…")
-def shared_load_events(_d):
+# ── Shared odds loader — MANUAL REFRESH MODE ────────────────────────────────
+# Odds are never fetched automatically. The sidebar "Refresh odds" button is
+# the only thing that spends API credits; the last fetch persists to disk so
+# restarts and reboots cost nothing.
+EVENTS_SNAPSHOT = "events_snapshot.json"
+
+
+def _events_snapshot_read():
+    try:
+        with open(EVENTS_SNAPSHOT) as f:
+            snap = json.load(f)
+        return snap.get("data", {}), snap.get("ts", "")
+    except Exception:
+        return {}, ""
+
+
+def refresh_events_now():
+    """The ONE function that spends board credits (besides opt-in prop/side
+    fetch buttons and the logged-bet CLV guard)."""
     from value_betting import fetch_events, snapshot_closing
     ev = fetch_events(days=2)
     snapshot_closing(ev)   # keep latest pre-kickoff prices for CLV grading
+    try:
+        with open(EVENTS_SNAPSHOT, "w") as f:
+            json.dump({"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                       "data": ev}, f)
+    except Exception:
+        pass
     return ev
+
+
+def shared_load_events(_d=None):
+    """Read-only: serves the last manually refreshed snapshot (never fetches)."""
+    data, _ts = _events_snapshot_read()
+    return data
 
 st.markdown("""
 <style>
@@ -238,6 +264,30 @@ with st.sidebar:
         "📋 Bet Tracker",
     ], label_visibility="collapsed")
 
+    # ── Manual odds refresh — the only automatic-credit control ─────────────
+    st.divider()
+    _sd, _sts = _events_snapshot_read()
+    if _sts:
+        try:
+            _mins = int((datetime.datetime.now()
+                         - datetime.datetime.fromisoformat(_sts)).total_seconds() // 60)
+            _age = f"{_mins} min" if _mins < 120 else f"{_mins // 60}h {_mins % 60}m"
+            _acol = "#22c55e" if _mins < 30 else ("#f59e0b" if _mins < 180 else "#ef4444")
+        except Exception:
+            _age, _acol = "unknown", "#64748b"
+        _ngames = sum(len(v) for v in _sd.values())
+        st.markdown(f'<div style="padding:0 4px;color:#94a3b8;font-size:12px">Odds data: <b style="color:{_acol}">{_age} old</b> · {_ngames} games</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="padding:0 4px;color:#f59e0b;font-size:12px">No odds loaded yet — refresh below.</div>', unsafe_allow_html=True)
+    if st.button("🔄 Refresh odds (≈15 credits)", use_container_width=True,
+                 help="The only action that fetches the board. Free while running on the ESPN fallback (dead key). Prop/side-line buttons are separate opt-in fetches."):
+        with st.spinner("Fetching fresh odds…"):
+            refresh_events_now()
+        st.rerun()
+    _sq = get_quota()
+    if _sq:
+        st.caption(f"🔋 {_sq['remaining']:.0f} credits left · used {_sq['used']:.0f}")
+
 
 now = datetime.datetime.now()
 date_str = now.strftime("%A, %b %-d, %Y")
@@ -292,6 +342,8 @@ if page == "🏠 Daily Intelligence":
     sort_key = SORT_KEYS[sort_choice]
 
     raw = shared_load_events(f"{today}-v4")
+    if not any(raw.values()):
+        st.markdown('<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:14px 18px;margin-bottom:12px;color:#fbbf24;font-size:13px">📭 <b>No odds loaded.</b> Manual-refresh mode is on — nothing fetches by itself. Hit <b>🔄 Refresh odds</b> in the sidebar to load the board (≈15 credits; free while on the ESPN fallback).</div>', unsafe_allow_html=True)
     data = value_bets(raw, min_ev=-1.0, bet_books=BET_BOOKS)
 
     # Free-feed banner: sports served by the ESPN/DraftKings fallback
@@ -507,22 +559,23 @@ if page == "🏠 Daily Intelligence":
                     unsafe_allow_html=True)
         st.caption("Hit prob assumes independent legs (de-vigged fair odds). Payout = $1 → $X. A +EV parlay needs every leg +EV; the 'Most Likely' parlay favors win-rate over EV.")
 
-    # Soccer spreads/totals/BTTS don't exist on the bulk feed, so we harvest
-    # them from the per-event side-bet endpoint (cached 30 min, soccer only —
-    # tennis books rarely price side lines, so fetching them wasted credits).
+    # Soccer spreads/totals/BTTS don't exist on the bulk feed. Harvesting them
+    # hits the per-event endpoint, so in manual-refresh mode it's opt-in only.
     from live_data import get_event_odds
     from value_betting import side_bets_for_event, CONSENSUS_BOOKS
 
-    @st.cache_data(ttl=1800, show_spinner="Fetching soccer side lines…")
+    _soccer_plan = [(lbl, "alternate_spreads,alternate_totals,btts", 2)
+                    for lbl, key in SPORTS.items()
+                    if key.startswith("soccer")
+                    and any(not e.get("_espn_fallback") for e in raw.get(lbl, []))]
+
+    @st.cache_data(show_spinner="Fetching soccer side lines…")
     def _focus_side(_d, _bb):
-        # dynamic: whatever soccer competitions are in season right now
-        plan = [(lbl, "alternate_spreads,alternate_totals,btts", 2)
-                for lbl, key in SPORTS.items()
-                if key.startswith("soccer") and raw.get(lbl)]
         rows = []
         bb = list(_bb) if _bb else None
-        for sport, mk, n in plan:
-            evs = sorted(raw.get(sport, []), key=lambda e: e.get("commence_time", ""))[:n]
+        for sport, mk, n in _soccer_plan:
+            evs = [e for e in sorted(raw.get(sport, []), key=lambda e: e.get("commence_time", ""))
+                   if not e.get("_espn_fallback")][:n]
             for e in evs:
                 evd = get_event_odds(SPORTS[sport], e["id"], mk, books=CONSENSUS_BOOKS)
                 for r in side_bets_for_event(evd, sport, bb):
@@ -535,7 +588,13 @@ if page == "🏠 Daily Intelligence":
                     rows.append(r)
         return rows
 
-    side_rows_all = _focus_side(f"{today}-v4", tuple(BET_BOOKS) if BET_BOOKS else ())
+    side_rows_all = []
+    if _soccer_plan:
+        _sc_est = sum(3 * n for _, _, n in _soccer_plan)
+        if st.button(f"⚽ Fetch soccer side-lines for the focus parlays (≈{_sc_est} credits, optional)"):
+            st.session_state["focus_side_go"] = True
+        if st.session_state.get("focus_side_go"):
+            side_rows_all = _focus_side(f"{today}-v4", tuple(BET_BOOKS) if BET_BOOKS else ())
 
     def _by_date(pool, dstr):
         """Filter a {sport: [rows]} pool to a single date (None = keep both days)."""
@@ -560,7 +619,7 @@ if page == "🏠 Daily Intelligence":
                           for s, v in d_data.items()}
                 f_side = [r for r in side_rows_all if not dstr or r.get("date") == dstr]
                 f_data["_side"] = f_side
-                st.markdown(f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">⚾ Baseball legs limited to <b>moneyline wins</b> · ⚽ {len(f_side)} soccer spread/total/BTTS side-lines (soonest games, cached 30 min) · Mixed builds up to <b>5 legs</b>.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">⚾ Baseball legs limited to <b>moneyline wins</b> · ⚽ {len(f_side)} soccer spread/total/BTTS side-lines (opt-in fetch above) · Mixed builds up to <b>5 legs</b>.</div>', unsafe_allow_html=True)
                 render_parlay_cards(build_parlay_suite(f_data, min_leg_prob=min_leg_prob / 100,
                                                        mixed_max_legs=5))
 
