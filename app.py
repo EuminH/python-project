@@ -1572,6 +1572,7 @@ elif page == "🎲 PrizePicks":
         return plan
 
     pool = []
+    prop_rows = []          # book props (populated by the fetch button below)
     plan = _pp_prop_plan()
     est = sum(len(mk) for _, _, mk in plan)
     if not plan:
@@ -1666,6 +1667,172 @@ elif page == "🎲 PrizePicks":
                 f'<span style="color:#64748b;font-weight:700">🔁 ALTERNATES</span> <span style="color:#64748b">— swap in if a pick isn\'t on PrizePicks:</span><br>{alts_html}</div>',
                 unsafe_allow_html=True)
         st.caption("⚠️ PrizePicks curates a much smaller board than sportsbooks — VERIFY each pick exists in their app before building the entry (their bot-wall blocks us from checking for you). Slates favor featured players (priced by 2+ books or in 2+ stat types), every card uses different players, and the 3-pick gets the strongest probabilities. If a pick is missing, swap an alternate in via the calculator below.")
+
+
+    # ── Paste-compare: your PrizePicks lines vs sportsbook fair value ────────
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">📋 Paste your PrizePicks lines — compare to book fair value</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#94a3b8;font-size:13px;margin-bottom:8px">Copy projections from the PrizePicks app (one per line: <code>Player 21.5 Points</code>; add <b>More</b> or <b>Less</b> if you\'ve chosen a side). We match each to the fetched sportsbook props and give the true hit% — flagging when PrizePicks\' line is softer or harder than the books\'.</div>', unsafe_allow_html=True)
+
+    pp_paste = st.text_area("PrizePicks lines", height=130,
+                            placeholder="A'ja Wilson 21.5 Points More\nNapheesa Collier 8.5 Rebounds\nAaron Judge 1.5 Total Bases Less",
+                            label_visibility="collapsed", key="pp_paste")
+
+    _STAT_MAP = [
+        (("pts+reb+ast", "pra", "points+rebounds+assists", "p+r+a"), "Player PRA O/U"),
+        (("rebound", "reb"), "Player rebounds O/U"),
+        (("assist", "ast"), "Player assists O/U"),
+        (("3-pt", "three", "3pt"), "Player threes O/U"),
+        (("point", "pts"), "Player points O/U"),
+        (("total base", "bases"), "Batter total bases O/U"),
+        (("home run", "homer", "hr"), "Batter home runs O/U"),
+        (("rbi",), "Batter RBIs O/U"),
+        (("hit",), "Batter hits O/U"),
+        (("run",), "Batter runs O/U"),
+        (("strikeout", "ks", "punchout"), "Pitcher strikeouts O/U"),
+        (("outs",), "Pitcher outs O/U"),
+    ]
+
+    def _stat_to_market(txt):
+        t = txt.lower()
+        for keys, label in _STAT_MAP:
+            if any(k in t for k in keys):
+                return label
+        return None
+
+    import re as _re, math as _math, unicodedata as _uni
+    from statistics import NormalDist as _ND
+
+    def _norm_nm(s):
+        s = _uni.normalize("NFKD", s).encode("ascii", "ignore").decode()
+        return s.casefold().replace(".", "").replace("'", "").strip()
+
+    if pp_paste.strip():
+        book_idx = {}
+        for b in prop_rows:
+            p = b["pick"]
+            if " Over " in p:
+                pl, num, side = p.split(" Over ", 1)[0], p.split(" Over ", 1)[1], "over"
+            elif " Under " in p:
+                pl, num, side = p.split(" Under ", 1)[0], p.split(" Under ", 1)[1], "under"
+            else:
+                continue
+            try:
+                bl = float(num.split()[0])
+            except Exception:
+                continue
+            e = book_idx.setdefault((_norm_nm(pl), b["market"]),
+                                    {"line": bl, "book": b["book"], "match": b["match"]})
+            e[side] = b["fair_prob"]
+            e["line"] = bl
+        by_last = {}
+        for (nm, mk) in book_idx:
+            by_last.setdefault(nm.split()[-1] if nm.split() else nm, set()).add(nm)
+
+        matched, unmatched = [], []
+        for raw in pp_paste.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            m = _re.search(r"(\d+(?:\.\d+)?)", line)
+            if not m:
+                unmatched.append((line, "no line number found"))
+                continue
+            pp_line = float(m.group(1))
+            before = line[:m.start()]
+            after = line[m.end():]
+            low = line.lower()
+            side_pick = ("under" if ("less" in low or "under" in low)
+                         else ("over" if ("more" in low or "over" in low) else None))
+            stat_txt = _re.sub(r"\b(more|less|over|under)\b", "", after, flags=_re.I)
+            player_txt = _re.sub(r"\b(more|less|over|under)\b", "", before, flags=_re.I).strip(" -–—\t")
+            mk = _stat_to_market(stat_txt) or _stat_to_market(after)
+            if not mk:
+                unmatched.append((line, "couldn't read the stat type"))
+                continue
+            npl = _norm_nm(player_txt)
+            key = (npl, mk)
+            if key not in book_idx:
+                cand = [c for c in by_last.get(npl.split()[-1] if npl.split() else npl, set())
+                        if (c, mk) in book_idx]
+                if len(cand) == 1:
+                    key = (cand[0], mk)
+            if key not in book_idx:
+                unmatched.append((line, "no fetched sportsbook prop for this player + stat"))
+                continue
+            e = book_idx[key]
+            over_b = e.get("over")
+            if over_b is None and e.get("under") is not None:
+                over_b = 1 - e["under"]
+            if over_b is None:
+                unmatched.append((line, "book priced only one side"))
+                continue
+            bl = e["line"]
+            if abs(bl - pp_line) < 1e-9:
+                over_pp, tag = over_b, "exact"
+            else:
+                sigma = max(0.75, _math.sqrt(max(bl, 1.0)))
+                z = _ND().inv_cdf(min(0.999, max(0.001, over_b)))
+                mu = bl + z * sigma
+                over_pp, tag = _ND().cdf((mu - pp_line) / sigma), "est"
+            under_pp = 1 - over_pp
+            if side_pick == "over":
+                side, hit = "More", over_pp
+            elif side_pick == "under":
+                side, hit = "Less", under_pp
+            else:
+                side, hit = ("More", over_pp) if over_pp >= under_pp else ("Less", under_pp)
+            matched.append({"player": player_txt, "market": mk, "pp_line": pp_line,
+                            "book_line": bl, "side": side, "hit": hit, "tag": tag,
+                            "book": e["book"], "match": e["match"]})
+
+        if not prop_rows:
+            st.markdown('<div style="background:#f59e0b14;border:1px solid #f59e0b44;border-radius:10px;padding:10px 14px;color:#fbbf24;font-size:12px">Fetch player props first (the ⚡ button up top) so there\'s book data to compare against. Your pasted lines are read, but nothing to compare them to yet.</div>', unsafe_allow_html=True)
+        elif matched:
+            def _verdict(h):
+                if h >= 0.60:  return "#22c55e", "STRONG"
+                if h >= 0.565: return "#4ade80", "LEAN"
+                if h >= 0.53:  return "#f59e0b", "THIN"
+                return "#ef4444", "AVOID"
+            body = ""
+            for r in sorted(matched, key=lambda x: -x["hit"]):
+                col, vt = _verdict(r["hit"])
+                diff = r["pp_line"] - r["book_line"]
+                if abs(diff) < 1e-9:
+                    cmp = "same line"
+                else:
+                    softer = (diff < 0 and r["side"] == "More") or (diff > 0 and r["side"] == "Less")
+                    cmp = f"{abs(diff):g} {'softer ✓' if softer else 'harder'}"
+                body += ('<tr style="border-bottom:1px solid #111127">'
+                         f'<td style="color:#e2e8f0;padding:6px 8px 6px 0;font-weight:600">{r["player"][:20]}</td>'
+                         f'<td style="color:#94a3b8;padding:6px 8px">{r["market"].replace(" O/U","")}</td>'
+                         f'<td style="color:#e2e8f0;text-align:center;padding:6px 8px;font-weight:600">{r["side"]} {r["pp_line"]:g}</td>'
+                         f'<td style="color:#64748b;text-align:center;padding:6px 8px">{r["book_line"]:g} · {cmp}</td>'
+                         f'<td style="color:{col};text-align:right;padding:6px 8px;font-weight:700">{r["hit"]*100:.1f}% <span style="color:#475569;font-size:10px">{r["tag"]}</span></td>'
+                         f'<td style="color:{col};text-align:center;padding:6px 0;font-weight:700">{vt}</td></tr>')
+            st.markdown('<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto;margin-top:6px">'
+                        '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+                        '<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                        '<th style="text-align:left;padding:5px 8px 5px 0;font-weight:500">PLAYER</th>'
+                        '<th style="text-align:left;padding:5px 8px;font-weight:500">STAT</th>'
+                        '<th style="text-align:center;padding:5px 8px;font-weight:500">YOUR PICK</th>'
+                        '<th style="text-align:center;padding:5px 8px;font-weight:500">BOOK LINE</th>'
+                        '<th style="text-align:right;padding:5px 8px;font-weight:500">TRUE HIT%</th>'
+                        '<th style="text-align:center;padding:5px 0;font-weight:500">CALL</th></tr>'
+                        + body + '</table></div>', unsafe_allow_html=True)
+            good = sorted([r for r in matched if r["hit"] >= 0.55], key=lambda x: -x["hit"])
+            if good and st.button(f"➕ Load {min(len(good),5)} best pick(s) (≥55%) into the calculator ↓"):
+                st.session_state["pp_type"] = "Flex"
+                st.session_state["pp_n"] = max(3, min(5, len(good)))
+                for i, r in enumerate(good[:5]):
+                    st.session_state[f"pp_l{i}"] = (f"{r['player'][:18]} {r['side']} {r['pp_line']:g}")[:34]
+                    st.session_state[f"pp_p{i}"] = min(97, max(30, int(round(r["hit"] * 100))))
+                st.rerun()
+            st.caption("TRUE HIT% = the multi-book consensus repriced to YOUR PrizePicks line — 'exact' when the lines match, 'est' when repriced via a normal approximation. 'softer ✓' means PrizePicks handed you a friendlier number than the books — that's your edge. CALL: STRONG ≥60% · LEAN ≥56.5% (Flex breakeven) · THIN ≥53% · else AVOID.")
+        if unmatched:
+            st.markdown('<div style="color:#64748b;font-size:12px;margin-top:8px"><b>Couldn\'t match:</b><br>'
+                        + "<br>".join(f'· {ln[:48]} <span style="color:#475569">— {why}</span>' for ln, why in unmatched[:12])
+                        + '</div>', unsafe_allow_html=True)
 
 
     # ── Build an entry ──────────────────────────────────────────────────────
