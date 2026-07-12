@@ -372,6 +372,55 @@ if page == "🏠 Daily Intelligence":
             f'<div style="color:#475569;font-size:10px;margin-top:3px">used {_q["used"]:.0f} · as of {_q["ts"][11:16]}</div></div>',
             unsafe_allow_html=True)
 
+    # ── FanDuel heavy-favorites scan ────────────────────────────────────────
+    with st.expander("📉 Show all FanDuel odds of -200 or more (heavy favorites)"):
+        fd_rows = []
+        for sport, events in raw.items():
+            for e in events:
+                if e.get("_espn_fallback"):
+                    continue
+                home, away = e.get("home_team", ""), e.get("away_team", "")
+                match = f"{away} @ {home}" if home and away else (away or home)
+                for bm in e.get("bookmakers", []):
+                    if bm.get("key") != "fanduel":
+                        continue
+                    for m in bm.get("markets", []):
+                        mkey = {"h2h": "ML", "spreads": "Spread", "totals": "Total"}.get(m.get("key"), m.get("key"))
+                        for o in m.get("outcomes", []):
+                            price = o.get("price")
+                            if not isinstance(price, (int, float)) or price > -200:
+                                continue
+                            pt = o.get("point")
+                            nm = o["name"] if pt is None else f"{o['name']} {pt:+g}"
+                            fd_rows.append({"sport": sport, "match": match, "market": mkey,
+                                            "pick": nm, "price": int(price),
+                                            "date": e.get("commence_time", "")[:10],
+                                            "time": e.get("commence_time", "")[11:16]})
+        if not fd_rows:
+            st.markdown('<div style="color:#94a3b8;font-size:13px;padding:12px;background:#1a1a2e;border-radius:10px;border:1px solid #1e1e3a">No FanDuel prices at -200 or steeper in the loaded board right now (or no odds loaded — hit 🔄 Refresh odds).</div>', unsafe_allow_html=True)
+        else:
+            fd_rows.sort(key=lambda r: r["price"])
+            head = ('<tr style="border-bottom:1px solid #1e1e3a;color:#64748b">'
+                    '<th style="text-align:left;padding:6px 8px 6px 0;font-weight:500">SPORT</th>'
+                    '<th style="text-align:left;padding:6px 8px;font-weight:500">MATCH</th>'
+                    '<th style="text-align:center;padding:6px 8px;font-weight:500">MKT</th>'
+                    '<th style="text-align:left;padding:6px 8px;font-weight:500">PICK</th>'
+                    '<th style="text-align:right;padding:6px 8px;font-weight:500">FANDUEL ODDS</th>'
+                    '<th style="text-align:right;padding:6px 0;font-weight:500">KICKOFF</th></tr>')
+            body = "".join(
+                '<tr style="border-bottom:1px solid #111127">'
+                f'<td style="color:#94a3b8;padding:7px 8px 7px 0;font-size:11px">{SPORT_TAGS.get(r["sport"],"")} {r["sport"]}</td>'
+                f'<td style="color:#e2e8f0;padding:7px 8px">{r["match"][:32]}</td>'
+                f'<td style="text-align:center;padding:7px 8px"><span style="background:#7c3aed22;color:#a78bfa;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">{r["market"]}</span></td>'
+                f'<td style="color:#e2e8f0;padding:7px 8px;font-weight:600">{r["pick"][:26]}</td>'
+                f'<td style="color:#f97316;text-align:right;padding:7px 8px;font-weight:700">{r["price"]}</td>'
+                f'<td style="color:#64748b;text-align:right;padding:7px 0;font-size:11px">{r["date"][5:]} {r["time"][:5]}</td></tr>'
+                for r in fd_rows)
+            st.markdown('<div style="background:#1a1a2e;border:1px solid #1e1e3a;border-radius:12px;padding:16px;overflow-x:auto">'
+                        '<table style="width:100%;border-collapse:collapse;font-size:12px">' + head + body + '</table></div>',
+                        unsafe_allow_html=True)
+            st.caption(f"{len(fd_rows)} FanDuel prices at -200 or steeper, sorted from heaviest favorite to lightest. Steep favorites still need a real edge to be +EV — check the Fair% board below rather than betting on price alone.")
+
     # Flatten + split
     all_priced = [b for bets in data.values() for b in bets]
     recs = sorted([b for b in all_priced if b["ev"] * 100 >= max(min_ev_pct, 0.0001)],
